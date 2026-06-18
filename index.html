@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Health Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen pb-12">
+
+    <div id="auth-screen" class="fixed inset-0 bg-slate-800/50 backdrop-blur-sm z-50 flex items-center justify-center">
+        <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm border border-slate-100">
+            <h2 class="text-2xl font-bold mb-2 text-slate-800">Welcome Back</h2>
+            <p class="text-sm text-slate-500 mb-6">Log in to sync your health data.</p>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Email</label>
+                    <input type="email" id="auth-email" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Password</label>
+                    <input type="password" id="auth-password" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <button id="login-btn" onclick="handleAuth()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-2.5 rounded-lg transition duration-200 shadow-sm mt-2 cursor-pointer">
+                    Login / Sign Up
+                </button>
+                <p id="auth-error" class="text-xs text-red-500 text-center hidden"></p>
+            </div>
+        </div>
+    </div>
+
+    <header class="bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-md mb-8">
+        <div class="max-w-6xl mx-auto px-4 py-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold">Daily Health Dashboard</h1>
+                <p class="text-emerald-100 text-sm">Stay disciplined, hit your targets.</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="current-date" class="text-lg font-semibold bg-emerald-700/30 px-4 py-2 rounded-lg"></div>
+                <button onclick="handleLogout()" class="text-sm text-emerald-100 hover:text-white font-semibold cursor-pointer">Logout</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-4 grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <section class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
+            <h2 class="text-xl font-bold mb-4 text-slate-700 flex items-center gap-2">
+                <span>📝</span> Log Today's Stats
+            </h2>
+            <form id="log-form" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Body Weight (lbs)</label>
+                    <input type="number" id="input-weight" step="0.1" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 mb-1">Calories (kcal)</label>
+                        <input type="number" id="input-calories" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 mb-1">Protein (g)</label>
+                        <input type="number" id="input-protein" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 mb-1">Carbs (g)</label>
+                        <input type="number" id="input-carbs" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 mb-1">Fat (g)</label>
+                        <input type="number" id="input-fat" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-slate-600 mb-1">Water Intake (oz)</label>
+                    <input type="number" id="input-water" required class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <button type="submit" id="save-btn" class="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-2.5 px-4 rounded-lg transition duration-200 shadow-sm cursor-pointer">
+                    Save Entry to Cloud
+                </button>
+            </form>
+        </section>
+
+        <div class="lg:col-span-2 space-y-8">
+            <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Calories</span>
+                            <span id="cal-status" class="text-xs px-2 py-0.5 rounded-full font-bold"></span>
+                        </div>
+                        <div class="text-2xl font-black text-slate-800"><span id="card-cal">0</span> / 1800 <span class="text-xs font-normal text-slate-400">kcal</span></div>
+                    </div>
+                    <div class="w-full bg-slate-100 h-3 rounded-full mt-4 overflow-hidden">
+                        <div id="bar-cal" class="h-full bg-emerald-500 transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Protein</span>
+                            <span id="protein-status" class="text-xs px-2 py-0.5 rounded-full font-bold"></span>
+                        </div>
+                        <div class="text-2xl font-black text-slate-800"><span id="card-protein">0</span> / 150 <span class="text-xs font-normal text-slate-400">g</span></div>
+                    </div>
+                    <div class="w-full bg-slate-100 h-3 rounded-full mt-4 overflow-hidden">
+                        <div id="bar-protein" class="h-full bg-blue-500 transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Water</span>
+                            <span id="water-status" class="text-xs px-2 py-0.5 rounded-full font-bold"></span>
+                        </div>
+                        <div class="text-2xl font-black text-slate-800"><span id="card-water">0</span> / 80 <span class="text-xs font-normal text-slate-400">oz</span></div>
+                    </div>
+                    <div class="w-full bg-slate-100 h-3 rounded-full mt-4 overflow-hidden">
+                        <div id="bar-water" class="h-full bg-cyan-500 transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-md font-bold text-slate-700 mb-4">Weight Progress Trend</h3>
+                    <div class="h-64 flex items-center justify-center">
+                        <canvas id="weightChart"></canvas>
+                    </div>
+                </div>
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-md font-bold text-slate-700 mb-4">Today's Macro Breakdown</h3>
+                    <div class="h-64 flex items-center justify-center">
+                        <canvas id="macroChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <section class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <h3 class="text-md font-bold text-slate-700 mb-4">Historical Log</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="border-b border-slate-100 text-slate-400 text-xs font-semibold uppercase tracking-wider bg-slate-50">
+                                <th class="p-3">Date</th>
+                                <th class="p-3">Weight</th>
+                                <th class="p-3">Calories</th>
+                                <th class="p-3">Protein</th>
+                                <th class="p-3">Carbs</th>
+                                <th class="p-3">Fat</th>
+                                <th class="p-3">Water</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-table-body" class="text-sm divide-y divide-slate-100">
+                            </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        // ==========================================
+        // 1. SUPABASE CONNECTION (PASTE YOUR KEYS HERE)
+        // ==========================================
+        const SUPABASE_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
+        
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // State variables
+        let currentUser = null;
+        let healthData = [];
+        let weightChart, macroChart;
+        
+        const todayStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        const storageKeyDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        document.getElementById('current-date').innerText = todayStr;
+
+        // ==========================================
+        // 2. AUTHENTICATION LOGIC
+        // ==========================================
+        window.addEventListener('DOMContentLoaded', async () => {
+            initWeightChart();
+            initMacroChart();
+            
+            // Check if user is already logged in
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+                currentUser = session.user;
+                document.getElementById('auth-screen').classList.add('hidden');
+                fetchDatabaseData();
+            }
+
+            // Listen for login/logout events
+            supabase.auth.onAuthStateChange((event, session) => {
+                if (event === 'SIGNED_IN') {
+                    currentUser = session.user;
+                    document.getElementById('auth-screen').classList.add('hidden');
+                    fetchDatabaseData();
+                } else if (event === 'SIGNED_OUT') {
+                    currentUser = null;
+                    document.getElementById('auth-screen').classList.remove('hidden');
+                    healthData = [];
+                    updateDashboardVisuals({});
+                    renderTable();
+                }
+            });
+        });
+
+        async function handleAuth() {
+            const email = document.getElementById('auth-email').value;
+            const password = document.getElementById('auth-password').value;
+            const errorText = document.getElementById('auth-error');
+            
+            if(!email || !password) {
+                errorText.innerText = "Please enter an email and password.";
+                errorText.classList.remove('hidden');
+                return;
+            }
+
+            // Attempt Login
+            let { error } = await supabase.auth.signInWithPassword({ email, password });
+            
+            // If user doesn't exist, try to sign them up automatically (since email confirm is off)
+            if (error && error.message.includes('Invalid login credentials')) {
+                const signUp = await supabase.auth.signUp({ email, password });
+                if (signUp.error) {
+                    errorText.innerText = signUp.error.message;
+                    errorText.classList.remove('hidden');
+                }
+            } else if (error) {
+                errorText.innerText = error.message;
+                errorText.classList.remove('hidden');
+            }
+        }
+
+        async function handleLogout() {
+            await supabase.auth.signOut();
+        }
+
+        // ==========================================
+        // 3. DATABASE OPERATIONS
+        // ==========================================
+        async function fetchDatabaseData() {
+            // Get all logs for this user, ordered by date
+            const { data, error } = await supabase
+                .from('health_logs')
+                .select('*')
+                .order('log_date', { ascending: false });
+
+            if (error) {
+                console.error("Error fetching data:", error);
+                return;
+            }
+
+            healthData = data;
+            
+            // Find today's data to populate form
+            const todayData = healthData.find(log => log.log_date === storageKeyDate);
+            if (todayData) {
+                document.getElementById('input-weight').value = todayData.weight || '';
+                document.getElementById('input-calories').value = todayData.calories || '';
+                document.getElementById('input-protein').value = todayData.protein || '';
+                document.getElementById('input-carbs').value = todayData.carbs || '';
+                document.getElementById('input-fat').value = todayData.fat || '';
+                document.getElementById('input-water').value = todayData.water || '';
+            }
+
+            updateDashboardVisuals(todayData || { calories: 0, protein: 0, carbs: 0, fat: 0, water: 0, weight: 0 });
+            renderTable();
+        }
+
+        // Form Submission (Saves to DB)
+        document.getElementById('log-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('save-btn');
+            btn.innerText = "Saving...";
+            
+            const entry = {
+                user_id: currentUser.id,
+                log_date: storageKeyDate,
+                weight: parseFloat(document.getElementById('input-weight').value),
+                calories: parseInt(document.getElementById('input-calories').value),
+                protein: parseInt(document.getElementById('input-protein').value),
+                carbs: parseInt(document.getElementById('input-carbs').value),
+                fat: parseInt(document.getElementById('input-fat').value),
+                water: parseInt(document.getElementById('input-water').value)
+            };
+
+            // Upsert handles both insert (new day) and update (overwriting today's stats)
+            const { error } = await supabase
+                .from('health_logs')
+                .upsert(entry, { onConflict: 'user_id, log_date' });
+
+            if (error) {
+                alert("Error saving: " + error.message);
+            } else {
+                await fetchDatabaseData(); // Refresh UI with verified cloud data
+            }
+            
+            btn.innerText = "Save Entry to Cloud";
+        });
+
+        // ==========================================
+        // 4. VISUALS & CHARTS (Unchanged from original)
+        // ==========================================
+        function updateDashboardVisuals(today) {
+            document.getElementById('card-cal').innerText = today.calories || 0;
+            document.getElementById('card-protein').innerText = today.protein || 0;
+            document.getElementById('card-water').innerText = today.water || 0;
+
+            const calPct = Math.min(((today.calories || 0) / 1800) * 100, 100);
+            const proteinPct = Math.min(((today.protein || 0) / 150) * 100, 100);
+            const waterPct = Math.min(((today.water || 0) / 80) * 100, 100);
+
+            document.getElementById('bar-cal').style.width = `${calPct}%`;
+            document.getElementById('bar-protein').style.width = `${proteinPct}%`;
+            document.getElementById('bar-water').style.width = `${waterPct}%`;
+
+            const calStatus = document.getElementById('cal-status');
+            if (!today.calories) {
+                calStatus.innerText = "Empty"; calStatus.className = "text-xs px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-500";
+            } else if (today.calories <= 1800) {
+                calStatus.innerText = "Under Cap"; calStatus.className = "text-xs px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-700";
+                document.getElementById('bar-cal').className = "h-full bg-emerald-500 transition-all duration-500";
+            } else {
+                calStatus.innerText = "Over Cap! ⚠️"; calStatus.className = "text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-700";
+                document.getElementById('bar-cal').className = "h-full bg-red-500 transition-all duration-500";
+            }
+
+            const proteinStatus = document.getElementById('protein-status');
+            if (today.protein >= 150) {
+                proteinStatus.innerText = "Goal Met! 🎉"; proteinStatus.className = "text-xs px-2 py-0.5 rounded-full font-bold bg-blue-100 text-blue-700";
+            } else {
+                proteinStatus.innerText = "Lacking"; proteinStatus.className = "text-xs px-2 py-
