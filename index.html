@@ -120,7 +120,9 @@ function totalsOf(meals){
     protein: acc.protein + (Number(m.protein)||0),
     carbs: acc.carbs + (Number(m.carbs)||0),
     fat: acc.fat + (Number(m.fat)||0),
-  }), {calories:0, protein:0, carbs:0, fat:0});
+    sodium: acc.sodium + (Number(m.sodium)||0),
+    sugar: acc.sugar + (Number(m.sugar)||0),
+  }), {calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0});
 }
 function macroPercents(totals){
   const pCal = totals.protein * 4, cCal = totals.carbs * 4, fCal = totals.fat * 9;
@@ -158,14 +160,16 @@ async function loadHistory(){
 
   const byDate = {};
   (healthRes.data || []).forEach(r => {
-    byDate[r.log_date] = { date: r.log_date, weight: r.weight, water: r.water || 0, calories:0, protein:0, carbs:0, fat:0 };
+    byDate[r.log_date] = { date: r.log_date, weight: r.weight, water: r.water || 0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 };
   });
   (mealsRes.data || []).forEach(m => {
-    if (!byDate[m.log_date]) byDate[m.log_date] = { date: m.log_date, weight: null, water: 0, calories:0, protein:0, carbs:0, fat:0 };
+    if (!byDate[m.log_date]) byDate[m.log_date] = { date: m.log_date, weight: null, water: 0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 };
     byDate[m.log_date].calories += Number(m.calories)||0;
     byDate[m.log_date].protein += Number(m.protein)||0;
     byDate[m.log_date].carbs += Number(m.carbs)||0;
     byDate[m.log_date].fat += Number(m.fat)||0;
+    byDate[m.log_date].sodium += Number(m.sodium)||0;
+    byDate[m.log_date].sugar += Number(m.sugar)||0;
   });
   state.history = Object.values(byDate).sort((a,b)=> a.date < b.date ? 1 : -1);
 }
@@ -244,6 +248,7 @@ async function confirmPendingMeal(){
     user_id: userId, log_date: state.selectedDate,
     name: m.name, calories: Math.round(m.calories), protein: Math.round(m.protein),
     carbs: Math.round(m.carbs), fat: Math.round(m.fat),
+    sodium: Math.round(m.sodium||0), sugar: Math.round(m.sugar||0),
   }).select().single();
   if (error) { state.loadError = 'Could not save meal: ' + error.message; render(); return; }
   state.meals.push(data);
@@ -265,7 +270,7 @@ async function confirmMoveMeal(id){
 }
 
 function startManualMeal(){
-  state.pendingMeal = { name: state.mealMode === 'text' ? ((state.mealTextValue||'').trim() || 'Meal') : 'Meal', calories:0, protein:0, carbs:0, fat:0 };
+  state.pendingMeal = { name: state.mealMode === 'text' ? ((state.mealTextValue||'').trim() || 'Meal') : 'Meal', calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 };
   render();
 }
 
@@ -294,6 +299,7 @@ async function runEstimate(){
     state.pendingMeal = {
       name: data.food_name || (state.mealMode === 'text' ? state.mealTextValue.trim() : 'Meal from photo'),
       calories: round(data.calories), protein: round(data.protein_g), carbs: round(data.carbs_g), fat: round(data.fat_g),
+      sodium: round(data.sodium_mg), sugar: round(data.sugar_g),
     };
   } catch (e) {
     state.estimateError = "Couldn't estimate that one — try rephrasing, a clearer photo, or enter the numbers yourself below.";
@@ -533,6 +539,10 @@ function renderDashboard(){
             <div class="num-field"><label>Carbs (g)</label><input type="number" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
             <div class="num-field"><label>Fat (g)</label><input type="number" id="pmFat" value="${state.pendingMeal.fat}"></div>
           </div>
+          <div class="row" style="margin-bottom:12px;">
+            <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" id="pmSodium" value="${state.pendingMeal.sodium||0}"></div>
+            <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" id="pmSugar" value="${state.pendingMeal.sugar||0}"></div>
+          </div>
           <div class="row">
             <button class="primary" id="confirmMealBtn">+ Add to today's log</button>
             <button id="discardMealBtn">Discard</button>
@@ -541,7 +551,10 @@ function renderDashboard(){
 
       ${state.meals.length ? state.meals.map(m => `
         <div class="meal-line" data-id="${m.id}">
-          <div style="font-size:14px;">${m.name}</div>
+          <div>
+            <div style="font-size:14px;">${m.name}</div>
+            <div class="muted" style="font-size:11px;">${m.sodium||0}mg sodium · ${m.sugar||0}g sugar</div>
+          </div>
           <div class="row">
             <span class="mono muted" style="font-size:13px;">${m.calories} cal · ${m.protein}p / ${m.carbs}c / ${m.fat}f</span>
             ${state.movingMealId === m.id
@@ -566,6 +579,7 @@ function renderDashboard(){
                 <div class="muted" style="font-size:11px; margin-top:8px;">% of calories from each macro</div>
               </div></div>`
           : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
+        ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">Today so far: ${round(totals.sodium)}mg sodium · ${round(totals.sugar)}g sugar <span style="opacity:0.7;">(ballpark)</span></div>` : ''}
       </div>
       <div class="card" style="flex:1 1 200px;">
         <h2>7-day average</h2>
@@ -659,6 +673,8 @@ function renderDashboard(){
     document.getElementById('pmProtein').addEventListener('change', (e) => { state.pendingMeal.protein = parseFloat(e.target.value)||0; });
     document.getElementById('pmCarbs').addEventListener('change', (e) => { state.pendingMeal.carbs = parseFloat(e.target.value)||0; });
     document.getElementById('pmFat').addEventListener('change', (e) => { state.pendingMeal.fat = parseFloat(e.target.value)||0; });
+    document.getElementById('pmSodium').addEventListener('change', (e) => { state.pendingMeal.sodium = parseFloat(e.target.value)||0; });
+    document.getElementById('pmSugar').addEventListener('change', (e) => { state.pendingMeal.sugar = parseFloat(e.target.value)||0; });
     document.getElementById('confirmMealBtn').addEventListener('click', confirmPendingMeal);
     document.getElementById('discardMealBtn').addEventListener('click', resetMealInputs);
   }
