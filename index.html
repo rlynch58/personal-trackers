@@ -15,7 +15,9 @@
     <script>
         const SUPABASE_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
         const SUPABASE_KEY = 'sb_publishable_wJyANKhPvTQlxERzaVEDEg_5tQtcWf6';
-        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        
+        // Initialize with a unique name to avoid conflicts
+        window.mySupabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         async function testLogin() {
             const email = document.getElementById('email').value;
@@ -24,7 +26,8 @@
             msg.innerText = "Attempting to connect...";
             
             try {
-                let { data, error } = await supabase.auth.signInWithPassword({ email, password });
+                // Use the unique window.mySupabase client
+                let { data, error } = await window.mySupabase.auth.signInWithPassword({ email, password });
                 if (error) {
                     msg.innerText = "ERROR: " + error.message;
                 } else {
