@@ -38,7 +38,7 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; color:var(--ink-muted); padding:6px 8px; }
   td { padding:8px; border-top:1px solid var(--border); }
-  tr.day-row { cursor:pointer; }
+  .day-row { cursor:pointer; }
   .meal-line { display:flex; align-items:center; justify-content:space-between; padding:9px 2px; border-top:1px dashed var(--border); flex-wrap:wrap; gap:6px; }
   .auth-box { max-width:360px; margin:80px auto; }
   .num-field { flex:1 1 80px; }
@@ -551,21 +551,32 @@ function renderDashboard(){
     <div class="card">
       <h2>History</h2>
       ${sortedHistory.length === 0 ? `<div class="muted" style="font-size:13px;">Nothing logged yet — today's entry will show up here.</div>` : `
-        <div style="overflow-x:auto;">
-        <table>
-          <thead><tr><th></th><th>Date</th><th>Weight</th><th>Calories</th><th>Protein</th><th>Water</th></tr></thead>
-          <tbody>
-            ${sortedHistory.slice(0,21).map(d => `
-              <tr class="day-row" data-date="${d.date}" style="background:${d.date===state.selectedDate?'var(--bg)':'transparent'}">
-                <td>${seal(dayHitGoals(d), 20)}</td>
-                <td style="font-weight:600;">${prettyDate(d.date)}</td>
-                <td class="mono">${d.weight != null ? d.weight : '—'}</td>
-                <td class="mono" style="color:${d.calories > GOALS.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</td>
-                <td class="mono" style="color:${d.protein >= GOALS.protein ? 'var(--sage)' : 'var(--ink)'}">${round(d.protein)}g</td>
-                <td class="mono" style="color:${(d.water||0) >= GOALS.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
+        <div>
+          ${sortedHistory.slice(0,21).map(d => `
+            <div class="day-row" data-date="${d.date}" style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; background:${d.date===state.selectedDate?'var(--sage-light)':'var(--bg)'}; border:1px solid ${d.date===state.selectedDate?'var(--sage)':'var(--border)'}; border-radius:14px; padding:14px 18px; margin-bottom:10px;">
+              <div class="row" style="gap:12px;">
+                ${seal(dayHitGoals(d), 28)}
+                <div style="font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:16px;">${prettyDate(d.date)}</div>
+              </div>
+              <div class="row" style="gap:20px;">
+                <div style="text-align:center; min-width:44px;">
+                  <div class="mono" style="font-size:16px; font-weight:600;">${d.weight != null ? d.weight : '—'}</div>
+                  <div class="muted" style="font-size:11px;">weight</div>
+                </div>
+                <div style="text-align:center; min-width:44px;">
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > GOALS.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</div>
+                  <div class="muted" style="font-size:11px;">cal</div>
+                </div>
+                <div style="text-align:center; min-width:44px;">
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.protein >= GOALS.protein ? 'var(--sage)' : 'var(--ink)'}">${round(d.protein)}g</div>
+                  <div class="muted" style="font-size:11px;">protein</div>
+                </div>
+                <div style="text-align:center; min-width:44px;">
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${(d.water||0) >= GOALS.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</div>
+                  <div class="muted" style="font-size:11px;">water</div>
+                </div>
+              </div>
+            </div>`).join('')}
         </div>`}
     </div>
   `;
