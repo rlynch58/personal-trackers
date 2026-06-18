@@ -85,6 +85,7 @@ const state = {
   authBusy: false,
   loadError: null,
   weightJustSaved: false,
+  lastWaterUndo: null,
 };
 
 let macroChartInstance = null;
@@ -188,11 +189,12 @@ async function saveDayField(patch){
     .upsert(next, { onConflict: 'user_id,log_date' })
     .select()
     .single();
-  if (error) { state.loadError = 'Save failed: ' + error.message; render(); return; }
+  if (error) { state.loadError = 'Save failed: ' + error.message; render(); return false; }
   state.dayRow = data;
   const h = state.history.find(d => d.date === state.selectedDate);
   if (h) { h.weight = data.weight; h.water = data.water; }
   render();
+  return true;
 }
 
 function commitWeightFromInput(){
@@ -205,9 +207,24 @@ function commitWeightFromInput(){
   });
 }
 
-function addWater(amount){
+async function addWater(amount){
   const current = (state.dayRow && state.dayRow.water) || 0;
-  saveDayField({ water: round(current + amount) });
+  const ok = await saveDayField({ water: round(current + amount) });
+  if (ok) {
+    state.lastWaterUndo = { amount };
+    render();
+    clearTimeout(window.__waterUndoTimer);
+    window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 6000);
+  }
+}
+
+async function undoWaterAdd(){
+  if (!state.lastWaterUndo) return;
+  const amount = state.lastWaterUndo.amount;
+  const current = (state.dayRow && state.dayRow.water) || 0;
+  state.lastWaterUndo = null;
+  clearTimeout(window.__waterUndoTimer);
+  await saveDayField({ water: round(Math.max(0, current - amount)) });
 }
 
 async function deleteMeal(id){
@@ -466,6 +483,18 @@ function renderDashboard(){
       </div>
 
       <div class="row center" style="margin-top:4px;" id="waterBtnRow"></div>
+
+      <div class="row center" style="margin-top:10px; gap:8px;">
+        <input id="customWaterInput" type="number" placeholder="Custom" style="width:90px;" class="mono">
+        <span class="muted" style="font-size:13px;">oz</span>
+        <button id="customWaterBtn" style="padding:7px 14px; font-size:13px;">Add</button>
+      </div>
+
+      ${state.lastWaterUndo ? `
+        <div class="row center" style="margin-top:10px;">
+          <span class="muted" style="font-size:13px;">Added ${state.lastWaterUndo.amount}oz</span>
+          <a class="link" id="undoWaterLink" style="font-size:13px; font-weight:600;">Undo</a>
+        </div>` : ''}
     </div>
 
     <div class="card">
@@ -595,6 +624,14 @@ function renderDashboard(){
     btn.addEventListener('click', () => addWater(oz));
     waterRow.appendChild(btn);
   });
+
+  document.getElementById('customWaterBtn').addEventListener('click', () => {
+    const input = document.getElementById('customWaterInput');
+    const v = parseFloat(input.value);
+    if (!isNaN(v) && v > 0) { addWater(v); input.value = ''; }
+  });
+  const undoLink = document.getElementById('undoWaterLink');
+  if (undoLink) undoLink.addEventListener('click', undoWaterAdd);
 
   document.getElementById('modeTextBtn').addEventListener('click', () => setMealMode('text'));
   document.getElementById('modePhotoBtn').addEventListener('click', () => setMealMode('photo'));
