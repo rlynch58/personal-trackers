@@ -58,7 +58,13 @@ const SUPA_ANON_KEY = 'sb_publishable_wJyANKhPvTQlxERzaVEDEg_5tQtcWf6';
 const GOALS = { calories: 1800, protein: 150, water: 80 };
 const FN_NAME = 'estimate-nutrition';
 
-const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY);
+const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY, {
+  auth: {
+    persistSession: true,    // keep the session in this browser's storage
+    autoRefreshToken: true,  // silently refresh so you don't get logged out
+    storage: window.localStorage,
+  },
+});
 
 // ---------- State ----------
 const state = {
