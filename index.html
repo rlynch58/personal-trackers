@@ -118,6 +118,16 @@ function totalsOf(meals){
     fat: acc.fat + (Number(m.fat)||0),
   }), {calories:0, protein:0, carbs:0, fat:0});
 }
+function macroPercents(totals){
+  const pCal = totals.protein * 4, cCal = totals.carbs * 4, fCal = totals.fat * 9;
+  const sum = pCal + cCal + fCal;
+  if (!sum) return { protein: 0, carbs: 0, fat: 0 };
+  return {
+    protein: Math.round((pCal/sum)*100),
+    carbs: Math.round((cCal/sum)*100),
+    fat: Math.round((fCal/sum)*100),
+  };
+}
 
 // ---------- Data loading ----------
 async function loadDay(date){
@@ -486,9 +496,10 @@ function renderDashboard(){
         ${(totals.protein+totals.carbs+totals.fat) > 0
           ? `<div class="row"><canvas id="macroChart" width="140" height="140"></canvas>
               <div>
-                <div><span class="legend-dot" style="background:var(--gold)"></span>Protein: <span class="mono">${round(totals.protein)}g</span></div>
-                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--coral)"></span>Carbs: <span class="mono">${round(totals.carbs)}g</span></div>
-                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--plum)"></span>Fat: <span class="mono">${round(totals.fat)}g</span></div>
+                <div><span class="legend-dot" style="background:var(--gold)"></span>Protein: <span class="mono">${round(totals.protein)}g</span> <span class="muted">(${macroPercents(totals).protein}%)</span></div>
+                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--coral)"></span>Carbs: <span class="mono">${round(totals.carbs)}g</span> <span class="muted">(${macroPercents(totals).carbs}%)</span></div>
+                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--plum)"></span>Fat: <span class="mono">${round(totals.fat)}g</span> <span class="muted">(${macroPercents(totals).fat}%)</span></div>
+                <div class="muted" style="font-size:11px; margin-top:8px;">% of calories from each macro</div>
               </div></div>`
           : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
       </div>
@@ -573,13 +584,21 @@ function renderDashboard(){
   if (macroChartInstance) { macroChartInstance.destroy(); macroChartInstance = null; }
   const macroCanvas = document.getElementById('macroChart');
   if (macroCanvas) {
+    const pct = macroPercents(totals);
+    const pctMap = { Protein: pct.protein, Carbs: pct.carbs, Fat: pct.fat };
     macroChartInstance = new Chart(macroCanvas, {
       type: 'doughnut',
       data: {
         labels: ['Protein','Carbs','Fat'],
         datasets: [{ data: [totals.protein, totals.carbs, totals.fat], backgroundColor: ['#C0922F','#C9603F','#7E6A93'], borderWidth: 0 }],
       },
-      options: { plugins: { legend: { display:false }, tooltip: { enabled:true } }, cutout: '60%' },
+      options: {
+        plugins: {
+          legend: { display:false },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${pctMap[ctx.label]}% (${round(ctx.raw)}g)` } },
+        },
+        cutout: '60%',
+      },
     });
   }
 
