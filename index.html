@@ -2,40 +2,37 @@
 <html>
 <head>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>body { font-family: sans-serif; padding: 20px; }</style>
 </head>
 <body>
-    <div id="auth-screen" style="padding:50px; font-family:sans-serif;">
-        <h2>Diagnostics: Login</h2>
-        <input type="email" id="email" placeholder="Email"><br>
-        <input type="password" id="password" placeholder="Password"><br>
-        <button onclick="testLogin()">Login / Sign Up</button>
-        <p id="msg" style="color:red; font-weight:bold;"></p>
+    <div id="app">
+        <h2>Health Tracker</h2>
+        <input type="number" id="weight" placeholder="Weight (kg)"><br>
+        <input type="number" id="calories" placeholder="Calories"><br>
+        <button onclick="saveData()">Save Log</button>
+        <button onclick="logout()" style="margin-top:20px;">Logout</button>
     </div>
 
     <script>
-        const SUPABASE_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
-        const SUPABASE_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
+        const supabase = supabase.createClient('https://gdnnscbhlrjrtpjneaia.supabase.co', 'sb_publishable_wJyANKhPvTQlxERzaVEDEg_5tQtcWf6');
         
-        // Initialize with a unique name to avoid conflicts
-        window.mySupabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-        async function testLogin() {
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            const msg = document.getElementById('msg');
-            msg.innerText = "Attempting to connect...";
+        async function saveData() {
+            const { data: { user } } = await supabase.auth.getUser();
+            const weight = document.getElementById('weight').value;
+            const calories = document.getElementById('calories').value;
             
-            try {
-                // Use the unique window.mySupabase client
-                let { data, error } = await window.mySupabase.auth.signInWithPassword({ email, password });
-                if (error) {
-                    msg.innerText = "ERROR: " + error.message;
-                } else {
-                    msg.innerText = "SUCCESS! Redirecting...";
-                }
-            } catch (err) {
-                msg.innerText = "CRITICAL FAILURE: " + err.message;
-            }
+            await supabase.from('health_logs').insert([{ 
+                user_id: user.id, 
+                log_date: new Date().toLocaleDateString(), 
+                weight, 
+                calories 
+            }]);
+            alert("Data Saved!");
+        }
+
+        async function logout() {
+            await supabase.auth.signOut();
+            location.reload();
         }
     </script>
 </body>
