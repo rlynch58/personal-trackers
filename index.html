@@ -214,7 +214,7 @@ async function addWater(amount){
     state.lastWaterUndo = { amount };
     render();
     clearTimeout(window.__waterUndoTimer);
-    window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 6000);
+    window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 10000);
   }
 }
 
