@@ -122,11 +122,12 @@ function macroPercents(totals){
   const pCal = totals.protein * 4, cCal = totals.carbs * 4, fCal = totals.fat * 9;
   const sum = pCal + cCal + fCal;
   if (!sum) return { protein: 0, carbs: 0, fat: 0 };
-  return {
-    protein: Math.round((pCal/sum)*100),
-    carbs: Math.round((cCal/sum)*100),
-    fat: Math.round((fCal/sum)*100),
-  };
+  const raw = [pCal/sum*100, cCal/sum*100, fCal/sum*100];
+  const floors = raw.map(Math.floor);
+  let remainder = 100 - floors.reduce((a,b)=>a+b,0);
+  const order = raw.map((v,i)=>({ i, frac: v - floors[i] })).sort((a,b)=> b.frac - a.frac);
+  for (let k=0; k<remainder; k++) floors[order[k].i]++;
+  return { protein: floors[0], carbs: floors[1], fat: floors[2] };
 }
 
 // ---------- Data loading ----------
