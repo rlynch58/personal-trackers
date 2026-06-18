@@ -80,6 +80,7 @@ const state = {
   estimating: false,
   estimateError: null,
   photo: null,
+  photoNote: '',
   authMode: 'signin',
   authError: null,
   authBusy: false,
@@ -269,7 +270,7 @@ function startManualMeal(){
 }
 
 function resetMealInputs(){
-  state.pendingMeal = null; state.estimateError = null; state.photo = null; state.mealTextValue = '';
+  state.pendingMeal = null; state.estimateError = null; state.photo = null; state.mealTextValue = ''; state.photoNote = '';
   render();
 }
 
@@ -281,7 +282,7 @@ async function runEstimate(){
     body = { mode: 'text', text };
   } else {
     if (!state.photo) { state.estimateError = 'Choose a photo first.'; render(); return; }
-    body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType };
+    body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType, note: (state.photoNote || '').trim() };
   }
 
   state.estimating = true; state.estimateError = null; state.pendingMeal = null;
@@ -507,8 +508,12 @@ function renderDashboard(){
       ${state.mealMode === 'text'
         ? `<textarea id="mealText" rows="2" placeholder="e.g. grilled chicken breast, a cup of rice, side of broccoli">${escapeHtml(state.mealTextValue)}</textarea>`
         : `<div>
-            <input type="file" accept="image/*" capture="environment" id="photoInput">
+            <input type="file" accept="image/*" id="photoInput">
             ${state.photo ? `<div><img src="${state.photo.previewUrl}" style="margin-top:10px; max-height:140px; border-radius:10px; border:1px solid var(--border);"></div>` : ''}
+            <div style="margin-top:10px;">
+              <input id="photoNoteInput" type="text" maxlength="200" placeholder="Add a note (optional) — e.g. no dressing, half portion" value="${escapeHtml(state.photoNote)}" style="width:100%;">
+              <div class="muted" style="font-size:11px; margin-top:3px; text-align:right;">${state.photoNote.length}/200</div>
+            </div>
           </div>`}
 
       <div class="row" style="margin-top:12px;">
@@ -641,6 +646,12 @@ function renderDashboard(){
   if (photoInput) photoInput.addEventListener('change', handlePhotoSelect);
   const mealTextEl = document.getElementById('mealText');
   if (mealTextEl) mealTextEl.addEventListener('input', (e) => { state.mealTextValue = e.target.value; });
+  const photoNoteEl = document.getElementById('photoNoteInput');
+  if (photoNoteEl) photoNoteEl.addEventListener('input', (e) => {
+    state.photoNote = e.target.value;
+    const counter = photoNoteEl.nextElementSibling;
+    if (counter) counter.textContent = `${state.photoNote.length}/200`;
+  });
 
   if (state.pendingMeal) {
     document.getElementById('pmName').addEventListener('change', (e) => { state.pendingMeal.name = e.target.value; });
