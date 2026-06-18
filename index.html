@@ -1,39 +1,617 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <style>body { font-family: sans-serif; padding: 20px; }</style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Health Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+  :root {
+    --bg:#EEF0E6; --surface:#fff; --ink:#2B2E3A; --ink-muted:#767B72; --border:#DEE2D4;
+    --sage:#5B7F5E; --sage-light:#DCE6DC; --gold:#C0922F; --gold-light:#F2E6CB;
+    --blue:#5B7C99; --blue-light:#DCE6EC; --coral:#C9603F; --coral-light:#F2DCD2; --plum:#7E6A93;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:'Inter',sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 16px 60px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:20px; margin-bottom:18px; }
+  h1, h2, .display { font-family:'Space Grotesk',sans-serif; font-weight:700; }
+  h2 { font-size:16px; font-weight:600; margin:0 0 12px; }
+  .mono { font-family:'IBM Plex Mono',monospace; }
+  .muted { color:var(--ink-muted); }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .between { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+  .center { display:flex; align-items:center; justify-content:center; }
+  input, select { font-family:inherit; font-size:14px; border:1px solid var(--border); border-radius:8px; padding:7px 9px; }
+  textarea { font-family:inherit; font-size:14px; border:1px solid var(--border); border-radius:10px; padding:10px; width:100%; resize:vertical; }
+  button { font-family:inherit; cursor:pointer; border-radius:10px; border:1px solid var(--border); background:transparent; padding:8px 14px; font-size:14px; font-weight:600; color:var(--ink-muted); }
+  button.primary { background:var(--ink); color:#fff; border:none; }
+  button.pill { border-radius:20px; padding:6px 13px; font-size:13px; }
+  .water-btn { border:1px solid var(--blue); color:var(--blue); background:var(--blue-light); border-radius:20px; }
+  .mode-btn.active { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .err { background:var(--coral-light); color:var(--coral); padding:8px 12px; border-radius:10px; font-size:13px; margin-bottom:14px; }
+  .ok { background:var(--sage-light); color:var(--sage); padding:8px 12px; border-radius:10px; font-size:13px; margin-bottom:14px; }
+  .ring-wrap { text-align:center; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--ink-muted); padding:6px 8px; }
+  td { padding:8px; border-top:1px solid var(--border); }
+  tr.day-row { cursor:pointer; }
+  .meal-line { display:flex; align-items:center; justify-content:space-between; padding:9px 2px; border-top:1px dashed var(--border); flex-wrap:wrap; gap:6px; }
+  .auth-box { max-width:360px; margin:80px auto; }
+  .num-field { flex:1 1 80px; }
+  .num-field label { font-size:11px; color:var(--ink-muted); display:block; margin-bottom:3px; }
+  .num-field input { width:100%; }
+  .legend-dot { width:9px; height:9px; border-radius:9px; display:inline-block; margin-right:6px; }
+  a.link { color:var(--blue); cursor:pointer; }
+</style>
 </head>
 <body>
-    <div id="app">
-        <h2>Health Tracker</h2>
-        <input type="number" id="weight" placeholder="Weight (kg)"><br>
-        <input type="number" id="calories" placeholder="Calories"><br>
-        <button onclick="saveData()">Save Log</button>
-        <button onclick="logout()" style="margin-top:20px;">Logout</button>
+<div id="app" class="wrap"></div>
+
+<script>
+// ---------- Config ----------
+const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
+const SUPA_ANON_KEY = 'sb_publishable_wJyANKhPvTQlxERzaVEDEg_5tQtcWf6';
+const GOALS = { calories: 1800, protein: 150, water: 80 };
+const FN_NAME = 'estimate-nutrition';
+
+const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY);
+
+// ---------- State ----------
+const state = {
+  session: null,
+  selectedDate: todayKey(),
+  dayRow: null,
+  meals: [],
+  history: [],
+  mealMode: 'text',
+  pendingMeal: null,
+  estimating: false,
+  estimateError: null,
+  photo: null,
+  authMode: 'signin',
+  authError: null,
+  authBusy: false,
+  loadError: null,
+};
+
+let macroChartInstance = null;
+let weightChartInstance = null;
+
+// ---------- Helpers ----------
+function pad(n){ return String(n).padStart(2,'0'); }
+function dateKey(d){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function todayKey(){ return dateKey(new Date()); }
+function prettyDate(key){
+  const [y,m,d] = key.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  return dt.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
+}
+function round(n){ return Math.round((Number(n)||0)*10)/10; }
+function clampPct(n){ return Math.max(0, Math.min(100, n)); }
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result.split(',')[1]);
+    r.onerror = () => reject(new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+}
+function totalsOf(meals){
+  return meals.reduce((acc,m)=>({
+    calories: acc.calories + (Number(m.calories)||0),
+    protein: acc.protein + (Number(m.protein)||0),
+    carbs: acc.carbs + (Number(m.carbs)||0),
+    fat: acc.fat + (Number(m.fat)||0),
+  }), {calories:0, protein:0, carbs:0, fat:0});
+}
+
+// ---------- Data loading ----------
+async function loadDay(date){
+  const userId = state.session.user.id;
+  const [dayRes, mealsRes] = await Promise.all([
+    supabaseClient.from('health_logs').select('*').eq('user_id', userId).eq('log_date', date).maybeSingle(),
+    supabaseClient.from('meals').select('*').eq('user_id', userId).eq('log_date', date).order('created_at', { ascending: true }),
+  ]);
+  state.dayRow = dayRes.data || null;
+  state.meals = mealsRes.data || [];
+}
+
+async function loadHistory(){
+  const userId = state.session.user.id;
+  const since = new Date();
+  since.setDate(since.getDate() - 45);
+  const sinceKey = dateKey(since);
+
+  const [healthRes, mealsRes] = await Promise.all([
+    supabaseClient.from('health_logs').select('*').eq('user_id', userId).gte('log_date', sinceKey).order('log_date', { ascending: true }),
+    supabaseClient.from('meals').select('*').eq('user_id', userId).gte('log_date', sinceKey),
+  ]);
+
+  const byDate = {};
+  (healthRes.data || []).forEach(r => {
+    byDate[r.log_date] = { date: r.log_date, weight: r.weight, water: r.water || 0, calories:0, protein:0, carbs:0, fat:0 };
+  });
+  (mealsRes.data || []).forEach(m => {
+    if (!byDate[m.log_date]) byDate[m.log_date] = { date: m.log_date, weight: null, water: 0, calories:0, protein:0, carbs:0, fat:0 };
+    byDate[m.log_date].calories += Number(m.calories)||0;
+    byDate[m.log_date].protein += Number(m.protein)||0;
+    byDate[m.log_date].carbs += Number(m.carbs)||0;
+    byDate[m.log_date].fat += Number(m.fat)||0;
+  });
+  state.history = Object.values(byDate).sort((a,b)=> a.date < b.date ? 1 : -1);
+}
+
+async function refreshAll(){
+  try {
+    await Promise.all([loadDay(state.selectedDate), loadHistory()]);
+    state.loadError = null;
+  } catch (e) {
+    state.loadError = "Couldn't load your data — check your connection and try refreshing.";
+  }
+  render();
+}
+
+// ---------- Mutations ----------
+async function saveDayField(patch){
+  const userId = state.session.user.id;
+  const current = state.dayRow || {};
+  const next = { user_id: userId, log_date: state.selectedDate, weight: current.weight ?? null, water: current.water ?? 0, ...patch };
+  const { data, error } = await supabaseClient
+    .from('health_logs')
+    .upsert(next, { onConflict: 'user_id,log_date' })
+    .select()
+    .single();
+  if (error) { state.loadError = 'Save failed: ' + error.message; render(); return; }
+  state.dayRow = data;
+  const h = state.history.find(d => d.date === state.selectedDate);
+  if (h) { h.weight = data.weight; h.water = data.water; }
+  render();
+}
+
+function commitWeightFromInput(){
+  const el = document.getElementById('weightInput');
+  const n = parseFloat(el.value);
+  saveDayField({ weight: isNaN(n) ? null : round(n) });
+}
+
+function addWater(amount){
+  const current = (state.dayRow && state.dayRow.water) || 0;
+  saveDayField({ water: round(current + amount) });
+}
+
+async function deleteMeal(id){
+  const { error } = await supabaseClient.from('meals').delete().eq('id', id);
+  if (error) { state.loadError = 'Delete failed: ' + error.message; render(); return; }
+  state.meals = state.meals.filter(m => m.id !== id);
+  await loadHistory();
+  render();
+}
+
+async function confirmPendingMeal(){
+  if (!state.pendingMeal) return;
+  const userId = state.session.user.id;
+  const m = state.pendingMeal;
+  const { data, error } = await supabaseClient.from('meals').insert({
+    user_id: userId, log_date: state.selectedDate,
+    name: m.name, calories: Math.round(m.calories), protein: Math.round(m.protein),
+    carbs: Math.round(m.carbs), fat: Math.round(m.fat),
+  }).select().single();
+  if (error) { state.loadError = 'Could not save meal: ' + error.message; render(); return; }
+  state.meals.push(data);
+  resetMealInputs();
+  await loadHistory();
+  render();
+}
+
+function startManualMeal(){
+  const textEl = document.getElementById('mealText');
+  state.pendingMeal = { name: state.mealMode === 'text' ? ((textEl && textEl.value.trim()) || 'Meal') : 'Meal', calories:0, protein:0, carbs:0, fat:0 };
+  render();
+}
+
+function resetMealInputs(){
+  state.pendingMeal = null; state.estimateError = null; state.photo = null;
+  render();
+}
+
+async function runEstimate(){
+  state.estimating = true; state.estimateError = null; state.pendingMeal = null;
+  render();
+  try {
+    let body;
+    if (state.mealMode === 'text') {
+      const text = document.getElementById('mealText').value.trim();
+      if (!text) { state.estimating = false; render(); return; }
+      body = { mode: 'text', text };
+    } else {
+      if (!state.photo) { state.estimating = false; render(); return; }
+      body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType };
+    }
+    const { data, error } = await supabaseClient.functions.invoke(FN_NAME, { body });
+    if (error) throw error;
+    if (data && data.error) throw new Error(data.error);
+    state.pendingMeal = {
+      name: data.food_name || (state.mealMode === 'text' ? document.getElementById('mealText').value.trim() : 'Meal from photo'),
+      calories: round(data.calories), protein: round(data.protein_g), carbs: round(data.carbs_g), fat: round(data.fat_g),
+    };
+  } catch (e) {
+    state.estimateError = "Couldn't estimate that one — try rephrasing, a clearer photo, or enter the numbers yourself below.";
+  } finally {
+    state.estimating = false;
+    render();
+  }
+}
+
+async function handlePhotoSelect(e){
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const base64 = await fileToBase64(file);
+    state.photo = { base64, mediaType: file.type || 'image/jpeg', previewUrl: URL.createObjectURL(file) };
+  } catch {
+    state.estimateError = "Couldn't read that photo — try another.";
+  }
+  render();
+}
+
+function setSelectedDate(d){
+  state.selectedDate = d;
+  loadDay(d).then(render);
+}
+
+function setMealMode(mode){
+  state.mealMode = mode; state.pendingMeal = null; state.estimateError = null;
+  render();
+}
+
+// ---------- Auth ----------
+async function handleAuthSubmit(e){
+  e.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  state.authError = null; state.authBusy = true; render();
+  try {
+    if (state.authMode === 'signup') {
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      if (error) throw error;
+      if (!data.session) {
+        state.authBusy = false;
+        state.authMode = 'check-email';
+        render();
+        return;
+      }
+    } else {
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+    }
+  } catch (err) {
+    state.authError = err.message || 'Something went wrong.';
+  } finally {
+    state.authBusy = false;
+    render();
+  }
+}
+
+async function signOut(){
+  await supabaseClient.auth.signOut();
+}
+
+// ---------- Rendering ----------
+function ring(pct, color, track, value, unit, label, goal){
+  const circumference = 2 * Math.PI * 39.5;
+  const offset = circumference * (1 - clampPct(pct)/100);
+  return `
+    <div class="ring-wrap">
+      <svg width="88" height="88" viewBox="0 0 88 88">
+        <circle cx="44" cy="44" r="39.5" fill="none" stroke="${track}" stroke-width="9"></circle>
+        <circle cx="44" cy="44" r="39.5" fill="none" stroke="${color}" stroke-width="9"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round"
+          transform="rotate(-90 44 44)"></circle>
+        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="mono" style="font-size:15px; font-weight:600; fill:var(--ink);">${round(value)}${unit}</text>
+      </svg>
+      <div class="muted" style="font-size:12px; margin-top:2px;">${label} <span style="opacity:.7">/ ${goal}${unit}</span></div>
+    </div>`;
+}
+
+function seal(hit, size=40){
+  if (hit) {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="17.5" fill="var(--sage)"></circle>
+      <path d="M12 20.5 L17.5 26 L28.5 14" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>`;
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 40 40">
+    <circle cx="20" cy="20" r="17.5" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="3 3"></circle>
+    <path d="M14 24 Q20 14 26 24" stroke="var(--ink-muted)" stroke-width="1.3" fill="none" stroke-linecap="round" opacity="0.5"></path>
+  </svg>`;
+}
+
+function dayHitGoals(d){
+  if (!d) return false;
+  return d.calories > 0 && d.calories <= GOALS.calories && d.protein >= GOALS.protein && (d.water||0) >= GOALS.water;
+}
+
+function renderAuth(){
+  const app = document.getElementById('app');
+  if (state.authMode === 'check-email') {
+    app.innerHTML = `
+      <div class="auth-box card">
+        <h1 style="font-size:22px; margin-bottom:6px;">Check your email</h1>
+        <p class="muted" style="font-size:14px;">We sent a confirmation link. Click it, then come back and sign in.</p>
+        <button class="primary" style="margin-top:10px;" id="backToSignIn">Back to sign in</button>
+      </div>`;
+    document.getElementById('backToSignIn').addEventListener('click', () => { state.authMode='signin'; render(); });
+    return;
+  }
+  app.innerHTML = `
+    <div class="auth-box card">
+      <h1 style="font-size:22px; margin-bottom:4px;">Health Tracker</h1>
+      <p class="muted" style="font-size:13px; margin-bottom:16px;">${state.authMode === 'signup' ? 'Create an account' : 'Sign in to your log'}</p>
+      ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
+      <form id="authForm">
+        <div style="margin-bottom:10px;">
+          <input id="authEmail" type="email" placeholder="Email" required style="width:100%;">
+        </div>
+        <div style="margin-bottom:14px;">
+          <input id="authPassword" type="password" placeholder="Password" required minlength="6" style="width:100%;">
+        </div>
+        <button type="submit" class="primary" style="width:100%;" ${state.authBusy ? 'disabled' : ''}>
+          ${state.authBusy ? 'Working…' : (state.authMode === 'signup' ? 'Sign up' : 'Sign in')}
+        </button>
+      </form>
+      <p style="font-size:13px; margin-top:14px;" id="authSwitchLine"></p>
+    </div>`;
+  document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
+  const switchLine = document.getElementById('authSwitchLine');
+  if (state.authMode === 'signup') {
+    switchLine.innerHTML = `Already have an account? <span class="link" id="switchToSignin">Sign in</span>`;
+    document.getElementById('switchToSignin').addEventListener('click', () => { state.authMode='signin'; state.authError=null; render(); });
+  } else {
+    switchLine.innerHTML = `Need an account? <span class="link" id="switchToSignup">Sign up</span>`;
+    document.getElementById('switchToSignup').addEventListener('click', () => { state.authMode='signup'; state.authError=null; render(); });
+  }
+}
+
+function renderDashboard(){
+  const app = document.getElementById('app');
+  const totals = totalsOf(state.meals);
+  const water = (state.dayRow && state.dayRow.water) || 0;
+  const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
+  const calOver = totals.calories > GOALS.calories;
+  const sortedHistory = [...state.history];
+  const weightSeries = [...state.history].filter(d => d.weight != null).sort((a,b)=> a.date < b.date ? -1 : 1);
+  const last7 = sortedHistory.slice(0,7);
+  const rolling7 = last7.length ? {
+    calories: round(last7.reduce((s,d)=>s+d.calories,0)/last7.length),
+    protein: round(last7.reduce((s,d)=>s+d.protein,0)/last7.length),
+    n: last7.length,
+  } : null;
+
+  app.innerHTML = `
+    <div class="between" style="margin-bottom:6px;">
+      <div>
+        <h1 style="font-size:26px; letter-spacing:-0.02em; margin:0;">Daily Log</h1>
+        <div class="muted" style="font-size:13px; margin-top:2px;">${GOALS.calories} cal cap · ${GOALS.protein}g protein · ${GOALS.water}oz water</div>
+      </div>
+      <button id="signOutBtn">Sign out</button>
     </div>
 
-    <script>
-        const supabase = supabase.createClient('https://gdnnscbhlrjrtpjneaia.supabase.co', 'sb_publishable_wJyANKhPvTQlxERzaVEDEg_5tQtcWf6');
-        
-        async function saveData() {
-            const { data: { user } } = await supabase.auth.getUser();
-            const weight = document.getElementById('weight').value;
-            const calories = document.getElementById('calories').value;
-            
-            await supabase.from('health_logs').insert([{ 
-                user_id: user.id, 
-                log_date: new Date().toLocaleDateString(), 
-                weight, 
-                calories 
-            }]);
-            alert("Data Saved!");
-        }
+    ${state.loadError ? `<div class="err">${state.loadError}</div>` : ''}
 
-        async function logout() {
-            await supabase.auth.signOut();
-            location.reload();
-        }
-    </script>
+    <div class="card">
+      <div class="between" style="margin-bottom:16px;">
+        <div class="row">
+          ${seal(dayHitGoals({...totals, water}))}
+          <input type="date" id="dateInput" value="${state.selectedDate}" max="${todayKey()}" style="font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:17px; border:none; background:transparent;">
+        </div>
+        <div class="row">
+          <span class="muted" style="font-size:13px;">Morning weight</span>
+          <input id="weightInput" type="number" step="0.1" placeholder="lbs" value="${weight}" style="width:70px;" class="mono">
+        </div>
+      </div>
+
+      <div class="row" style="justify-content:space-around; margin-bottom:8px;">
+        ${ring((totals.calories/GOALS.calories)*100, calOver ? 'var(--coral)' : 'var(--sage)', 'var(--sage-light)', totals.calories, '', 'Calories', GOALS.calories)}
+        ${ring((totals.protein/GOALS.protein)*100, 'var(--gold)', 'var(--gold-light)', totals.protein, 'g', 'Protein', GOALS.protein)}
+        ${ring((water/GOALS.water)*100, 'var(--blue)', 'var(--blue-light)', water, 'oz', 'Water', GOALS.water)}
+      </div>
+
+      <div class="row center" style="margin-top:4px;" id="waterBtnRow"></div>
+    </div>
+
+    <div class="card">
+      <h2>Log a meal</h2>
+      <div class="row" style="margin-bottom:12px;">
+        <button class="mode-btn pill ${state.mealMode==='text'?'active':''}" id="modeTextBtn">Describe it</button>
+        <button class="mode-btn pill ${state.mealMode==='photo'?'active':''}" id="modePhotoBtn">Photo</button>
+      </div>
+
+      ${state.mealMode === 'text'
+        ? `<textarea id="mealText" rows="2" placeholder="e.g. grilled chicken breast, a cup of rice, side of broccoli"></textarea>`
+        : `<div>
+            <input type="file" accept="image/*" capture="environment" id="photoInput">
+            ${state.photo ? `<div><img src="${state.photo.previewUrl}" style="margin-top:10px; max-height:140px; border-radius:10px; border:1px solid var(--border);"></div>` : ''}
+          </div>`}
+
+      <div class="row" style="margin-top:12px;">
+        <button class="primary" id="estimateBtn" ${state.estimating ? 'disabled' : ''}>${state.estimating ? 'Estimating…' : 'Estimate nutrition'}</button>
+        <button id="manualBtn">Enter numbers manually</button>
+      </div>
+
+      ${state.estimateError ? `<div class="err" style="margin-top:10px;">${state.estimateError}</div>` : ''}
+
+      ${state.pendingMeal ? `
+        <div class="card" style="background:var(--bg); margin-top:14px; margin-bottom:0;">
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">Check these before adding — estimates are approximate</div>
+          <input id="pmName" value="${state.pendingMeal.name}" style="width:100%; font-weight:600; margin-bottom:10px;">
+          <div class="row" style="margin-bottom:12px;">
+            <div class="num-field"><label>Calories</label><input type="number" id="pmCalories" value="${state.pendingMeal.calories}"></div>
+            <div class="num-field"><label>Protein (g)</label><input type="number" id="pmProtein" value="${state.pendingMeal.protein}"></div>
+            <div class="num-field"><label>Carbs (g)</label><input type="number" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
+            <div class="num-field"><label>Fat (g)</label><input type="number" id="pmFat" value="${state.pendingMeal.fat}"></div>
+          </div>
+          <div class="row">
+            <button class="primary" id="confirmMealBtn">+ Add to today's log</button>
+            <button id="discardMealBtn">Discard</button>
+          </div>
+        </div>` : ''}
+
+      ${state.meals.length ? state.meals.map(m => `
+        <div class="meal-line" data-id="${m.id}">
+          <div style="font-size:14px;">${m.name}</div>
+          <div class="row">
+            <span class="mono muted" style="font-size:13px;">${m.calories} cal · ${m.protein}p / ${m.carbs}c / ${m.fat}f</span>
+            <button class="delete-meal-btn" data-id="${m.id}" style="border:none; padding:2px;">✕</button>
+          </div>
+        </div>`).join('') : ''}
+    </div>
+
+    <div class="row" style="align-items:stretch;">
+      <div class="card" style="flex:1 1 280px;">
+        <h2>Today's macros</h2>
+        ${(totals.protein+totals.carbs+totals.fat) > 0
+          ? `<div class="row"><canvas id="macroChart" width="140" height="140"></canvas>
+              <div>
+                <div><span class="legend-dot" style="background:var(--gold)"></span>Protein: <span class="mono">${round(totals.protein)}g</span></div>
+                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--coral)"></span>Carbs: <span class="mono">${round(totals.carbs)}g</span></div>
+                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--plum)"></span>Fat: <span class="mono">${round(totals.fat)}g</span></div>
+              </div></div>`
+          : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
+      </div>
+      <div class="card" style="flex:1 1 200px;">
+        <h2>7-day average</h2>
+        ${rolling7 ? `
+          <div class="muted" style="font-size:13px; margin-bottom:4px;">Based on ${rolling7.n} logged day${rolling7.n>1?'s':''}</div>
+          <div class="mono" style="font-size:22px; font-weight:600; color:${rolling7.calories > GOALS.calories ? 'var(--coral)' : 'var(--sage)'};">${rolling7.calories} cal</div>
+          <div class="mono" style="font-size:22px; font-weight:600; color:var(--gold);">${rolling7.protein}g protein</div>
+        ` : `<div class="muted" style="font-size:13px;">No days logged yet.</div>`}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Weight trend</h2>
+      ${weightSeries.length > 1 ? `<canvas id="weightChart" height="90"></canvas>` : `<div class="muted" style="font-size:13px;">Log your weight on a couple more mornings to see a trend line.</div>`}
+    </div>
+
+    <div class="card">
+      <h2>History</h2>
+      ${sortedHistory.length === 0 ? `<div class="muted" style="font-size:13px;">Nothing logged yet — today's entry will show up here.</div>` : `
+        <div style="overflow-x:auto;">
+        <table>
+          <thead><tr><th></th><th>Date</th><th>Weight</th><th>Calories</th><th>Protein</th><th>Water</th></tr></thead>
+          <tbody>
+            ${sortedHistory.slice(0,21).map(d => `
+              <tr class="day-row" data-date="${d.date}" style="background:${d.date===state.selectedDate?'var(--bg)':'transparent'}">
+                <td>${seal(dayHitGoals(d), 20)}</td>
+                <td style="font-weight:600;">${prettyDate(d.date)}</td>
+                <td class="mono">${d.weight != null ? d.weight : '—'}</td>
+                <td class="mono" style="color:${d.calories > GOALS.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</td>
+                <td class="mono" style="color:${d.protein >= GOALS.protein ? 'var(--sage)' : 'var(--ink)'}">${round(d.protein)}g</td>
+                <td class="mono" style="color:${(d.water||0) >= GOALS.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>`}
+    </div>
+  `;
+
+  // ---- wire up events ----
+  document.getElementById('signOutBtn').addEventListener('click', signOut);
+  document.getElementById('dateInput').addEventListener('change', (e) => setSelectedDate(e.target.value));
+  document.getElementById('weightInput').addEventListener('blur', commitWeightFromInput);
+
+  const waterRow = document.getElementById('waterBtnRow');
+  [8,12,16,20].forEach(oz => {
+    const btn = document.createElement('button');
+    btn.className = 'water-btn pill';
+    btn.textContent = `+${oz}oz`;
+    btn.addEventListener('click', () => addWater(oz));
+    waterRow.appendChild(btn);
+  });
+
+  document.getElementById('modeTextBtn').addEventListener('click', () => setMealMode('text'));
+  document.getElementById('modePhotoBtn').addEventListener('click', () => setMealMode('photo'));
+  document.getElementById('estimateBtn').addEventListener('click', runEstimate);
+  document.getElementById('manualBtn').addEventListener('click', startManualMeal);
+  const photoInput = document.getElementById('photoInput');
+  if (photoInput) photoInput.addEventListener('change', handlePhotoSelect);
+
+  if (state.pendingMeal) {
+    document.getElementById('pmName').addEventListener('change', (e) => { state.pendingMeal.name = e.target.value; });
+    document.getElementById('pmCalories').addEventListener('change', (e) => { state.pendingMeal.calories = parseFloat(e.target.value)||0; });
+    document.getElementById('pmProtein').addEventListener('change', (e) => { state.pendingMeal.protein = parseFloat(e.target.value)||0; });
+    document.getElementById('pmCarbs').addEventListener('change', (e) => { state.pendingMeal.carbs = parseFloat(e.target.value)||0; });
+    document.getElementById('pmFat').addEventListener('change', (e) => { state.pendingMeal.fat = parseFloat(e.target.value)||0; });
+    document.getElementById('confirmMealBtn').addEventListener('click', confirmPendingMeal);
+    document.getElementById('discardMealBtn').addEventListener('click', resetMealInputs);
+  }
+
+  document.querySelectorAll('.delete-meal-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteMeal(btn.getAttribute('data-id')));
+  });
+  document.querySelectorAll('.day-row').forEach(row => {
+    row.addEventListener('click', () => setSelectedDate(row.getAttribute('data-date')));
+  });
+
+  // ---- charts ----
+  if (macroChartInstance) { macroChartInstance.destroy(); macroChartInstance = null; }
+  const macroCanvas = document.getElementById('macroChart');
+  if (macroCanvas) {
+    macroChartInstance = new Chart(macroCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: ['Protein','Carbs','Fat'],
+        datasets: [{ data: [totals.protein, totals.carbs, totals.fat], backgroundColor: ['#C0922F','#C9603F','#7E6A93'], borderWidth: 0 }],
+      },
+      options: { plugins: { legend: { display:false }, tooltip: { enabled:true } }, cutout: '60%' },
+    });
+  }
+
+  if (weightChartInstance) { weightChartInstance.destroy(); weightChartInstance = null; }
+  const weightCanvas = document.getElementById('weightChart');
+  if (weightCanvas) {
+    weightChartInstance = new Chart(weightCanvas, {
+      type: 'line',
+      data: {
+        labels: weightSeries.map(d => prettyDate(d.date)),
+        datasets: [{ data: weightSeries.map(d => d.weight), borderColor: '#5B7F5E', backgroundColor:'#5B7F5E', tension:0.3, pointRadius:3 }],
+      },
+      options: { plugins: { legend: { display:false } }, scales: { y: { grid: { color:'#DEE2D4' } }, x: { grid: { display:false } } } },
+    });
+  }
+}
+
+function render(){
+  if (!state.session) {
+    renderAuth();
+  } else {
+    renderDashboard();
+  }
+}
+
+// ---------- Boot ----------
+supabaseClient.auth.onAuthStateChange((event, session) => {
+  const hadSession = !!state.session;
+  state.session = session;
+  if (session && !hadSession) {
+    refreshAll();
+  } else if (!session) {
+    render();
+  }
+});
+
+supabaseClient.auth.getSession().then(({ data }) => {
+  state.session = data.session;
+  if (state.session) {
+    refreshAll();
+  } else {
+    render();
+  }
+});
+</script>
 </body>
 </html>
