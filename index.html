@@ -76,6 +76,7 @@ const state = {
   mealMode: 'text',
   mealTextValue: '',
   pendingMeal: null,
+  movingMealId: null,
   estimating: false,
   estimateError: null,
   photo: null,
@@ -224,6 +225,18 @@ async function confirmPendingMeal(){
   if (error) { state.loadError = 'Could not save meal: ' + error.message; render(); return; }
   state.meals.push(data);
   resetMealInputs();
+  await loadHistory();
+  render();
+}
+
+async function confirmMoveMeal(id){
+  const input = document.querySelector(`.move-date-input[data-id="${id}"]`);
+  const newDate = input && input.value;
+  if (!newDate) return;
+  const { error } = await supabaseClient.from('meals').update({ log_date: newDate }).eq('id', id);
+  if (error) { state.loadError = 'Move failed: ' + error.message; render(); return; }
+  state.meals = state.meals.filter(m => m.id !== id);
+  state.movingMealId = null;
   await loadHistory();
   render();
 }
@@ -486,7 +499,12 @@ function renderDashboard(){
           <div style="font-size:14px;">${m.name}</div>
           <div class="row">
             <span class="mono muted" style="font-size:13px;">${m.calories} cal · ${m.protein}p / ${m.carbs}c / ${m.fat}f</span>
-            <button class="delete-meal-btn" data-id="${m.id}" style="border:none; padding:2px;">✕</button>
+            ${state.movingMealId === m.id
+              ? `<input type="date" class="move-date-input" data-id="${m.id}" value="${state.selectedDate}" max="${todayKey()}" style="width:135px;">
+                 <button class="confirm-move-btn" data-id="${m.id}" style="padding:5px 10px; font-size:12px;">Move</button>
+                 <button class="cancel-move-btn" style="padding:5px 10px; font-size:12px; border:none;">Cancel</button>`
+              : `<button class="move-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Move</button>
+                 <button class="delete-meal-btn" data-id="${m.id}" style="border:none; padding:2px;">✕</button>`}
           </div>
         </div>`).join('') : ''}
     </div>
@@ -576,6 +594,15 @@ function renderDashboard(){
 
   document.querySelectorAll('.delete-meal-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteMeal(btn.getAttribute('data-id')));
+  });
+  document.querySelectorAll('.move-meal-btn').forEach(btn => {
+    btn.addEventListener('click', () => { state.movingMealId = btn.getAttribute('data-id'); render(); });
+  });
+  document.querySelectorAll('.cancel-move-btn').forEach(btn => {
+    btn.addEventListener('click', () => { state.movingMealId = null; render(); });
+  });
+  document.querySelectorAll('.confirm-move-btn').forEach(btn => {
+    btn.addEventListener('click', () => confirmMoveMeal(btn.getAttribute('data-id')));
   });
   document.querySelectorAll('.day-row').forEach(row => {
     row.addEventListener('click', () => setSelectedDate(row.getAttribute('data-date')));
