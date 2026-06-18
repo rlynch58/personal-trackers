@@ -55,7 +55,7 @@
 // ---------- Config ----------
 const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
 const SUPA_ANON_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
-const GOALS = { calories: 1800, protein: 150, water: 80 };
+const GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
 const FN_NAME = 'estimate-nutrition';
 
 const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY, {
@@ -579,7 +579,11 @@ function renderDashboard(){
                 <div class="muted" style="font-size:11px; margin-top:8px;">% of calories from each macro</div>
               </div></div>`
           : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
-        ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">Today so far: ${round(totals.sodium)}mg sodium · ${round(totals.sugar)}g sugar <span style="opacity:0.7;">(ballpark)</span></div>` : ''}
+        ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">
+            Today so far: <span class="mono" style="color:${totals.sodium > GOALS.sodium ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sodium)}mg</span> sodium <span style="opacity:0.6;">/ ${GOALS.sodium}mg</span>
+            · <span class="mono" style="color:${totals.sugar > GOALS.sugar ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sugar)}g</span> sugar <span style="opacity:0.6;">/ ${GOALS.sugar}g</span>
+            <span style="opacity:0.7;"> (ballpark)</span>
+          </div>` : ''}
       </div>
       <div class="card" style="flex:1 1 200px;">
         <h2>7-day average</h2>
