@@ -547,7 +547,7 @@ function renderDashboard(){
   document.getElementById('weightInput').addEventListener('blur', commitWeightFromInput);
 
   const waterRow = document.getElementById('waterBtnRow');
-  [8,12,16,20].forEach(oz => {
+  [12,16,20,40].forEach(oz => {
     const btn = document.createElement('button');
     btn.className = 'water-btn pill';
     btn.textContent = `+${oz}oz`;
