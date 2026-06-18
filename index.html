@@ -74,6 +74,7 @@ const state = {
   meals: [],
   history: [],
   mealMode: 'text',
+  mealTextValue: '',
   pendingMeal: null,
   estimating: false,
   estimateError: null,
@@ -105,6 +106,9 @@ function fileToBase64(file){
     r.onerror = () => reject(new Error('read failed'));
     r.readAsDataURL(file);
   });
+}
+function escapeHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function totalsOf(meals){
   return meals.reduce((acc,m)=>({
@@ -214,34 +218,34 @@ async function confirmPendingMeal(){
 }
 
 function startManualMeal(){
-  const textEl = document.getElementById('mealText');
-  state.pendingMeal = { name: state.mealMode === 'text' ? ((textEl && textEl.value.trim()) || 'Meal') : 'Meal', calories:0, protein:0, carbs:0, fat:0 };
+  state.pendingMeal = { name: state.mealMode === 'text' ? ((state.mealTextValue||'').trim() || 'Meal') : 'Meal', calories:0, protein:0, carbs:0, fat:0 };
   render();
 }
 
 function resetMealInputs(){
-  state.pendingMeal = null; state.estimateError = null; state.photo = null;
+  state.pendingMeal = null; state.estimateError = null; state.photo = null; state.mealTextValue = '';
   render();
 }
 
 async function runEstimate(){
+  let body;
+  if (state.mealMode === 'text') {
+    const text = (state.mealTextValue || '').trim();
+    if (!text) { state.estimateError = 'Type what you ate first.'; render(); return; }
+    body = { mode: 'text', text };
+  } else {
+    if (!state.photo) { state.estimateError = 'Choose a photo first.'; render(); return; }
+    body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType };
+  }
+
   state.estimating = true; state.estimateError = null; state.pendingMeal = null;
   render();
   try {
-    let body;
-    if (state.mealMode === 'text') {
-      const text = document.getElementById('mealText').value.trim();
-      if (!text) { state.estimating = false; render(); return; }
-      body = { mode: 'text', text };
-    } else {
-      if (!state.photo) { state.estimating = false; render(); return; }
-      body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType };
-    }
     const { data, error } = await supabaseClient.functions.invoke(FN_NAME, { body });
     if (error) throw error;
     if (data && data.error) throw new Error(data.error);
     state.pendingMeal = {
-      name: data.food_name || (state.mealMode === 'text' ? document.getElementById('mealText').value.trim() : 'Meal from photo'),
+      name: data.food_name || (state.mealMode === 'text' ? state.mealTextValue.trim() : 'Meal from photo'),
       calories: round(data.calories), protein: round(data.protein_g), carbs: round(data.carbs_g), fat: round(data.fat_g),
     };
   } catch (e) {
@@ -437,7 +441,7 @@ function renderDashboard(){
       </div>
 
       ${state.mealMode === 'text'
-        ? `<textarea id="mealText" rows="2" placeholder="e.g. grilled chicken breast, a cup of rice, side of broccoli"></textarea>`
+        ? `<textarea id="mealText" rows="2" placeholder="e.g. grilled chicken breast, a cup of rice, side of broccoli">${escapeHtml(state.mealTextValue)}</textarea>`
         : `<div>
             <input type="file" accept="image/*" capture="environment" id="photoInput">
             ${state.photo ? `<div><img src="${state.photo.previewUrl}" style="margin-top:10px; max-height:140px; border-radius:10px; border:1px solid var(--border);"></div>` : ''}
@@ -545,6 +549,8 @@ function renderDashboard(){
   document.getElementById('manualBtn').addEventListener('click', startManualMeal);
   const photoInput = document.getElementById('photoInput');
   if (photoInput) photoInput.addEventListener('change', handlePhotoSelect);
+  const mealTextEl = document.getElementById('mealText');
+  if (mealTextEl) mealTextEl.addEventListener('input', (e) => { state.mealTextValue = e.target.value; });
 
   if (state.pendingMeal) {
     document.getElementById('pmName').addEventListener('change', (e) => { state.pendingMeal.name = e.target.value; });
