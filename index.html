@@ -638,7 +638,15 @@ function renderDashboard(){
 
   // ---- wire up events ----
   document.getElementById('signOutBtn').addEventListener('click', signOut);
-  document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+  document.getElementById('refreshBtn').addEventListener('click', () => {
+    state.mealTextValue = '';
+    state.photo = null;
+    state.photoNote = '';
+    state.pendingMeal = null;
+    state.estimateError = null;
+    state.movingMealId = null;
+    refreshAll();
+  });
   document.getElementById('dateInput').addEventListener('change', (e) => setSelectedDate(e.target.value));
   document.getElementById('weightInput').addEventListener('blur', commitWeightFromInput);
   document.getElementById('saveWeightBtn').addEventListener('click', commitWeightFromInput);
