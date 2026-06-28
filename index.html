@@ -47,6 +47,22 @@
   .legend-dot { width:9px; height:9px; border-radius:9px; display:inline-block; margin-right:6px; }
   a.link { color:var(--blue); cursor:pointer; }
 </style>
+<script>
+(function(){
+  const c=document.createElement('canvas');c.width=180;c.height=180;
+  const x=c.getContext('2d');
+  x.fillStyle='#0F1923';x.fillRect(0,0,180,180);
+  x.fillStyle='#4ECCA3';
+  x.beginPath();x.roundRect(15,65,22,50,4);x.fill();
+  x.beginPath();x.roundRect(40,72,14,36,3);x.fill();
+  x.beginPath();x.roundRect(54,86,72,8,3);x.fill();
+  x.beginPath();x.roundRect(126,72,14,36,3);x.fill();
+  x.beginPath();x.roundRect(143,65,22,50,4);x.fill();
+  const link=document.createElement('link');
+  link.rel='apple-touch-icon';link.href=c.toDataURL('image/png');
+  document.head.appendChild(link);
+})();
+</script>
 </head>
 <body>
 <div id="app" class="wrap"></div>
