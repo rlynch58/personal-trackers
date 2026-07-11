@@ -751,16 +751,17 @@ function renderDashboard(){
   if (macroCanvas) {
     const pct = macroPercents(totals);
     const pctMap = { Protein: pct.protein, Carbs: pct.carbs, Fat: pct.fat };
+    const gramsMap = { Protein: totals.protein, Carbs: totals.carbs, Fat: totals.fat };
     macroChartInstance = new Chart(macroCanvas, {
       type: 'doughnut',
       data: {
         labels: ['Protein','Carbs','Fat'],
-        datasets: [{ data: [totals.protein, totals.carbs, totals.fat], backgroundColor: ['#FF6B35','#A8E63D','#7E6A93'], borderWidth: 0 }],
+        datasets: [{ data: [pct.protein, pct.carbs, pct.fat], backgroundColor: ['#FF6B35','#A8E63D','#7E6A93'], borderWidth: 0 }],
       },
       options: {
         plugins: {
           legend: { display:false },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${pctMap[ctx.label]}% (${round(ctx.raw)}g)` } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${pctMap[ctx.label]}% (${round(gramsMap[ctx.label])}g)` } },
         },
         cutout: '60%',
       },
