@@ -4,8 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 <title>Health Tracker</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
 
@@ -215,6 +215,10 @@ async function saveDayField(patch){
   state.dayRow = data;
   const h = state.history.find(d => d.date === state.selectedDate);
   if (h) { h.weight = data.weight; h.water = data.water; }
+  else {
+    state.history.push({ date: state.selectedDate, weight: data.weight, water: data.water || 0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 });
+    state.history.sort((a,b)=> a.date < b.date ? 1 : -1);
+  }
   render();
   return true;
 }
@@ -340,7 +344,13 @@ async function handlePhotoSelect(e){
 
 function setSelectedDate(d){
   state.selectedDate = d;
-  loadDay(d).then(render);
+  loadDay(d).then(() => {
+    state.loadError = null;
+    render();
+  }).catch(() => {
+    state.loadError = "Couldn't load that day — check your connection and try refreshing.";
+    render();
+  });
 }
 
 function setMealMode(mode){
@@ -569,7 +579,7 @@ function renderDashboard(){
       ${state.pendingMeal ? `
         <div class="card" style="background:var(--bg); margin-top:14px; margin-bottom:0;">
           <div class="muted" style="font-size:12px; margin-bottom:8px;">Check these before adding — estimates are approximate</div>
-          <input id="pmName" value="${state.pendingMeal.name}" style="width:100%; font-weight:600; margin-bottom:10px;">
+          <input id="pmName" value="${escapeHtml(state.pendingMeal.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
           <div class="row" style="margin-bottom:12px;">
             <div class="num-field"><label>Calories</label><input type="number" id="pmCalories" value="${state.pendingMeal.calories}"></div>
             <div class="num-field"><label>Protein (g)</label><input type="number" id="pmProtein" value="${state.pendingMeal.protein}"></div>
@@ -589,7 +599,7 @@ function renderDashboard(){
       ${state.meals.length ? state.meals.map(m => `
         <div class="meal-line" data-id="${m.id}">
           <div>
-            <div style="font-size:14px;">${m.name}</div>
+            <div style="font-size:14px;">${escapeHtml(m.name)}</div>
             <div class="muted" style="font-size:11px;">${m.sodium||0}mg sodium · ${m.sugar||0}g sugar</div>
           </div>
           <div class="row">
