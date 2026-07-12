@@ -160,6 +160,8 @@ async function loadDay(date){
     supabaseClient.from('health_logs').select('*').eq('user_id', userId).eq('log_date', date).maybeSingle(),
     supabaseClient.from('meals').select('*').eq('user_id', userId).eq('log_date', date).order('created_at', { ascending: true }),
   ]);
+  if (dayRes.error) throw dayRes.error;
+  if (mealsRes.error) throw mealsRes.error;
   state.dayRow = dayRes.data || null;
   state.meals = mealsRes.data || [];
 }
@@ -174,6 +176,8 @@ async function loadHistory(){
     supabaseClient.from('health_logs').select('*').eq('user_id', userId).gte('log_date', sinceKey).order('log_date', { ascending: true }),
     supabaseClient.from('meals').select('*').eq('user_id', userId).gte('log_date', sinceKey),
   ]);
+  if (healthRes.error) throw healthRes.error;
+  if (mealsRes.error) throw mealsRes.error;
 
   const byDate = {};
   (healthRes.data || []).forEach(r => {
@@ -348,6 +352,8 @@ function setSelectedDate(d){
     state.loadError = null;
     render();
   }).catch(() => {
+    state.dayRow = null;
+    state.meals = [];
     state.loadError = "Couldn't load that day — check your connection and try refreshing.";
     render();
   });
