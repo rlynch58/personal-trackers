@@ -48,6 +48,10 @@
   .legend-dot { width:9px; height:9px; border-radius:9px; display:inline-block; margin-right:6px; }
   a.link { color:var(--blue); cursor:pointer; }
   .ver { font-size:.68rem; font-weight:600; color:var(--ink); opacity:.6; margin-left:6px; letter-spacing:0; vertical-align:2px; font-family:'Inter',sans-serif; }
+  .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(10px);background:#20494B;border:1px solid var(--accent);box-shadow:0 8px 28px rgba(0,0,0,.45);border-radius:10px;padding:9px 18px;font-size:13px;color:var(--ink);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:2000;white-space:nowrap;font-family:'Inter',sans-serif;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .toast.actionable{pointer-events:auto;display:flex;align-items:center;gap:14px;}
+  .toast-undo{color:#FF9A6B;font-weight:700;cursor:pointer;background:none;border:none;font-size:13px;padding:0;font-family:'Space Grotesk',sans-serif;}
 </style>
 <script>
 (function(){
@@ -68,13 +72,15 @@
 </head>
 <body>
 <div id="app" class="wrap"></div>
+<div class="toast" id="toast"></div>
 
 <script>
 // ---------- Config ----------
 const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
 const SUPA_ANON_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
 const GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
-const APP_VERSION = '1.1';
+const APP_VERSION = '1.2';
+const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
 const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY, {
@@ -110,6 +116,8 @@ const state = {
 
 let macroChartInstance = null;
 let weightChartInstance = null;
+const pendingDeleteMealIds = new Set();
+let pendingMealDeleteTimer = null;
 
 // ---------- Helpers ----------
 function pad(n){ return String(n).padStart(2,'0'); }
@@ -132,6 +140,23 @@ function fileToBase64(file){
 }
 function escapeHtml(s){
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function showToast(msg, undoFn){
+  const t = document.getElementById('toast');
+  clearTimeout(t._hideTimer);
+  if (typeof undoFn === 'function') {
+    t.classList.add('actionable');
+    t.innerHTML = '<span></span><button class="toast-undo">Undo</button>';
+    t.querySelector('span').textContent = msg;
+    t.querySelector('.toast-undo').onclick = () => { undoFn(); t.classList.remove('show'); t.classList.remove('actionable'); };
+    t.classList.add('show');
+    t._hideTimer = setTimeout(() => { t.classList.remove('show'); t.classList.remove('actionable'); }, MEAL_DELETE_UNDO_MS);
+  } else {
+    t.classList.remove('actionable');
+    t.textContent = msg;
+    t.classList.add('show');
+    t._hideTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
 }
 function totalsOf(meals){
   return meals.reduce((acc,m)=>({
@@ -259,10 +284,25 @@ async function undoWaterAdd(){
   await saveDayField({ water: round(Math.max(0, current - amount)) });
 }
 
-async function deleteMeal(id){
-  const { error } = await supabaseClient.from('meals').delete().eq('id', id);
+function deleteMeal(id){
+  pendingDeleteMealIds.add(id);
+  render();
+  clearTimeout(pendingMealDeleteTimer);
+  showToast('Meal removed', () => {
+    clearTimeout(pendingMealDeleteTimer);
+    pendingDeleteMealIds.delete(id);
+    render();
+  });
+  pendingMealDeleteTimer = setTimeout(commitPendingMealDeletes, MEAL_DELETE_UNDO_MS);
+}
+
+async function commitPendingMealDeletes(){
+  const ids = [...pendingDeleteMealIds];
+  if (!ids.length) return;
+  const { error } = await supabaseClient.from('meals').delete().in('id', ids);
+  pendingDeleteMealIds.clear();
   if (error) { state.loadError = 'Delete failed: ' + error.message; render(); return; }
-  state.meals = state.meals.filter(m => m.id !== id);
+  state.meals = state.meals.filter(m => !ids.includes(m.id));
   await loadHistory();
   render();
 }
@@ -487,7 +527,8 @@ function renderAuth(){
 
 function renderDashboard(){
   const app = document.getElementById('app');
-  const totals = totalsOf(state.meals);
+  const visibleMeals = state.meals.filter(m => !pendingDeleteMealIds.has(m.id));
+  const totals = totalsOf(visibleMeals);
   const water = (state.dayRow && state.dayRow.water) || 0;
   const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
   const calOver = totals.calories > GOALS.calories;
@@ -604,7 +645,7 @@ function renderDashboard(){
           </div>
         </div>` : ''}
 
-      ${state.meals.length ? state.meals.map(m => `
+      ${visibleMeals.length ? visibleMeals.map(m => `
         <div class="meal-line" data-id="${m.id}">
           <div>
             <div style="font-size:14px;">${escapeHtml(m.name)}</div>
@@ -795,7 +836,7 @@ function renderDashboard(){
         labels: weightSeries.map(d => prettyDate(d.date)),
         datasets: [{ data: weightSeries.map(d => d.weight), borderColor: '#FF6B35', backgroundColor:'#FF6B35', tension:0.3, pointRadius:3 }],
       },
-      options: { plugins: { legend: { display:false } }, scales: { y: { grid: { color:'rgba(234,247,246,.12)' } }, x: { grid: { display:false } } } },
+      options: { plugins: { legend: { display:false } }, scales: { y: { grid: { color:'rgba(234,247,246,.12)' }, ticks: { color:'rgba(234,247,246,.65)' } }, x: { grid: { display:false }, ticks: { color:'rgba(234,247,246,.65)' } } } },
     });
   }
 }
