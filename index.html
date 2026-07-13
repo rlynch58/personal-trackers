@@ -79,7 +79,7 @@
 const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
 const SUPA_ANON_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
 const GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
-const APP_VERSION = '1.2';
+const APP_VERSION = '1.3';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -112,6 +112,10 @@ const state = {
   loadError: null,
   weightJustSaved: false,
   lastWaterUndo: null,
+  recentMeals: null,
+  recentMealsOpen: false,
+  recentMealsLoading: false,
+  editingMealId: null,
 };
 
 let macroChartInstance = null;
@@ -334,6 +338,82 @@ async function confirmMoveMeal(id){
   state.movingMealId = null;
   await loadHistory();
   render();
+}
+
+async function loadRecentMeals(){
+  const userId = state.session.user.id;
+  state.recentMealsLoading = true;
+  render();
+  const { data, error } = await supabaseClient.from('meals')
+    .select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(60);
+  state.recentMealsLoading = false;
+  if (error) { state.recentMeals = []; render(); return; }
+  const seen = new Set();
+  const distinct = [];
+  (data || []).forEach(m => {
+    const key = m.name.trim().toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    distinct.push(m);
+  });
+  state.recentMeals = distinct.slice(0, 8);
+  render();
+}
+
+function toggleRecentMeals(){
+  state.recentMealsOpen = !state.recentMealsOpen;
+  if (state.recentMealsOpen && state.recentMeals === null) { loadRecentMeals(); return; }
+  render();
+}
+
+async function logRecentMeal(id){
+  const m = (state.recentMeals || []).find(x => x.id === id);
+  if (!m) return;
+  const userId = state.session.user.id;
+  const { data, error } = await supabaseClient.from('meals').insert({
+    user_id: userId, log_date: state.selectedDate,
+    name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
+    sodium: m.sodium || 0, sugar: m.sugar || 0,
+  }).select().single();
+  if (error) { state.loadError = 'Could not log meal: ' + error.message; render(); return; }
+  state.meals.push(data);
+  await loadHistory();
+  render();
+  showToast(`Logged ${m.name}`);
+}
+
+function startEditMeal(id){
+  state.movingMealId = null;
+  state.editingMealId = id;
+  render();
+}
+
+function cancelEditMeal(){
+  state.editingMealId = null;
+  render();
+}
+
+async function saveEditMeal(id){
+  const val = (sel) => document.querySelector(sel);
+  const name = (val(`.edit-name[data-id="${id}"]`).value || '').trim();
+  if (!name) { showToast("Name can't be empty"); return; }
+  const patch = {
+    name,
+    calories: Math.round(parseFloat(val(`.edit-calories[data-id="${id}"]`).value) || 0),
+    protein: Math.round(parseFloat(val(`.edit-protein[data-id="${id}"]`).value) || 0),
+    carbs: Math.round(parseFloat(val(`.edit-carbs[data-id="${id}"]`).value) || 0),
+    fat: Math.round(parseFloat(val(`.edit-fat[data-id="${id}"]`).value) || 0),
+    sodium: Math.round(parseFloat(val(`.edit-sodium[data-id="${id}"]`).value) || 0),
+    sugar: Math.round(parseFloat(val(`.edit-sugar[data-id="${id}"]`).value) || 0),
+  };
+  const { data, error } = await supabaseClient.from('meals').update(patch).eq('id', id).select().single();
+  if (error) { state.loadError = 'Save failed: ' + error.message; render(); return; }
+  const idx = state.meals.findIndex(m => m.id === id);
+  if (idx !== -1) state.meals[idx] = data;
+  state.editingMealId = null;
+  await loadHistory();
+  render();
+  showToast('Meal updated');
 }
 
 function startManualMeal(){
@@ -602,6 +682,19 @@ function renderDashboard(){
 
     <div class="card">
       <h2>Log a meal</h2>
+      <div style="margin-bottom:10px;">
+        <span class="link" id="recentMealsToggle" style="font-size:13px; font-weight:600;">Recent meals ${state.recentMealsOpen ? '⌄' : '›'}</span>
+        ${state.recentMealsOpen ? `
+          <div style="margin-top:8px;">
+            ${state.recentMealsLoading
+              ? `<div class="muted" style="font-size:13px;">Loading…</div>`
+              : (state.recentMeals && state.recentMeals.length
+                  ? `<div class="row" style="gap:6px;">${state.recentMeals.map(m => `
+                      <button class="recent-meal-chip pill" data-id="${m.id}" style="font-size:12px; font-weight:500;">${escapeHtml(m.name)}</button>
+                    `).join('')}</div>`
+                  : `<div class="muted" style="font-size:13px;">No meals logged yet.</div>`)}
+          </div>` : ''}
+      </div>
       <div class="row" style="margin-bottom:12px;">
         <button class="mode-btn pill ${state.mealMode==='text'?'active':''}" id="modeTextBtn">Describe it</button>
         <button class="mode-btn pill ${state.mealMode==='photo'?'active':''}" id="modePhotoBtn">Photo</button>
@@ -646,7 +739,25 @@ function renderDashboard(){
         </div>` : ''}
 
       ${visibleMeals.length ? visibleMeals.map(m => `
-        <div class="meal-line" data-id="${m.id}">
+        <div class="meal-line" data-id="${m.id}" style="${state.editingMealId===m.id ? 'display:block;' : ''}">
+          ${state.editingMealId === m.id ? `
+            <div class="muted" style="font-size:11px; margin-bottom:8px;">Editing meal</div>
+            <input class="edit-name" data-id="${m.id}" value="${escapeHtml(m.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
+            <div class="row" style="margin-bottom:10px;">
+              <div class="num-field"><label>Calories</label><input type="number" class="edit-calories" data-id="${m.id}" value="${m.calories}"></div>
+              <div class="num-field"><label>Protein (g)</label><input type="number" class="edit-protein" data-id="${m.id}" value="${m.protein}"></div>
+              <div class="num-field"><label>Carbs (g)</label><input type="number" class="edit-carbs" data-id="${m.id}" value="${m.carbs}"></div>
+              <div class="num-field"><label>Fat (g)</label><input type="number" class="edit-fat" data-id="${m.id}" value="${m.fat}"></div>
+            </div>
+            <div class="row" style="margin-bottom:10px;">
+              <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" class="edit-sodium" data-id="${m.id}" value="${m.sodium||0}"></div>
+              <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" class="edit-sugar" data-id="${m.id}" value="${m.sugar||0}"></div>
+            </div>
+            <div class="row">
+              <button class="primary save-edit-btn" data-id="${m.id}">Save changes</button>
+              <button class="cancel-edit-btn" data-id="${m.id}" style="border:none;">Cancel</button>
+            </div>
+          ` : `
           <div>
             <div style="font-size:14px;">${escapeHtml(m.name)}</div>
             <div class="muted" style="font-size:11px;">${m.sodium||0}mg sodium · ${m.sugar||0}g sugar</div>
@@ -657,9 +768,11 @@ function renderDashboard(){
               ? `<input type="date" class="move-date-input" data-id="${m.id}" value="${state.selectedDate}" max="${todayKey()}" style="width:135px;">
                  <button class="confirm-move-btn" data-id="${m.id}" style="padding:5px 10px; font-size:12px;">Move</button>
                  <button class="cancel-move-btn" style="padding:5px 10px; font-size:12px; border:none;">Cancel</button>`
-              : `<button class="move-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Move</button>
+              : `<button class="edit-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Edit</button>
+                 <button class="move-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Move</button>
                  <button class="delete-meal-btn" data-id="${m.id}" style="border:none; padding:2px;">✕</button>`}
           </div>
+          `}
         </div>`).join('') : ''}
     </div>
 
@@ -738,6 +851,8 @@ function renderDashboard(){
     state.pendingMeal = null;
     state.estimateError = null;
     state.movingMealId = null;
+    state.editingMealId = null;
+    state.recentMeals = null;
     refreshAll();
   });
   document.getElementById('dateInput').addEventListener('change', (e) => setSelectedDate(e.target.value));
@@ -792,13 +907,27 @@ function renderDashboard(){
     btn.addEventListener('click', () => deleteMeal(btn.getAttribute('data-id')));
   });
   document.querySelectorAll('.move-meal-btn').forEach(btn => {
-    btn.addEventListener('click', () => { state.movingMealId = btn.getAttribute('data-id'); render(); });
+    btn.addEventListener('click', () => { state.editingMealId = null; state.movingMealId = btn.getAttribute('data-id'); render(); });
   });
   document.querySelectorAll('.cancel-move-btn').forEach(btn => {
     btn.addEventListener('click', () => { state.movingMealId = null; render(); });
   });
   document.querySelectorAll('.confirm-move-btn').forEach(btn => {
     btn.addEventListener('click', () => confirmMoveMeal(btn.getAttribute('data-id')));
+  });
+  const recentToggle = document.getElementById('recentMealsToggle');
+  if (recentToggle) recentToggle.addEventListener('click', toggleRecentMeals);
+  document.querySelectorAll('.recent-meal-chip').forEach(btn => {
+    btn.addEventListener('click', () => logRecentMeal(btn.getAttribute('data-id')));
+  });
+  document.querySelectorAll('.edit-meal-btn').forEach(btn => {
+    btn.addEventListener('click', () => startEditMeal(btn.getAttribute('data-id')));
+  });
+  document.querySelectorAll('.save-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => saveEditMeal(btn.getAttribute('data-id')));
+  });
+  document.querySelectorAll('.cancel-edit-btn').forEach(btn => {
+    btn.addEventListener('click', cancelEditMeal);
   });
   document.querySelectorAll('.day-row').forEach(row => {
     row.addEventListener('click', () => setSelectedDate(row.getAttribute('data-date')));
@@ -839,6 +968,8 @@ function renderDashboard(){
       options: { plugins: { legend: { display:false } }, scales: { y: { grid: { color:'rgba(234,247,246,.12)' }, ticks: { color:'rgba(234,247,246,.65)' } }, x: { grid: { display:false }, ticks: { color:'rgba(234,247,246,.65)' } } } },
     });
   }
+
+  if (state.recentMealsOpen && state.recentMeals === null && !state.recentMealsLoading) loadRecentMeals();
 }
 
 function render(){
