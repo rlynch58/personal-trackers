@@ -81,7 +81,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.9';
+const APP_VERSION = '1.10';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -155,6 +155,39 @@ function formatTime(iso){
   const dt = new Date(iso);
   if (isNaN(dt.getTime())) return '';
   return dt.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+}
+function parseDateKey(key){
+  const [y,m,d] = key.split('-').map(Number);
+  return new Date(y, m-1, d);
+}
+function monthDay(key){
+  return parseDateKey(key).toLocaleDateString(undefined, { month:'short', day:'numeric' });
+}
+// Fixed calendar window — today back through six days prior, oldest first —
+// as opposed to "the last 7 entries with data somewhere in history," which
+// could silently span far more than a week if recent days were sparse.
+function last7DateKeys(){
+  const keys = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    keys.push(dateKey(d));
+  }
+  return keys;
+}
+// Walks backward from anchorKey (inclusive) looking for the nearest day with
+// a recorded (non-null) weight, capped at maxLookbackDays. historyMap is a
+// date -> state.history-entry map built by the caller.
+function resolveNearestWeight(anchorKey, historyMap, maxLookbackDays){
+  const anchorDate = parseDateKey(anchorKey);
+  for (let i = 0; i <= maxLookbackDays; i++) {
+    const d = new Date(anchorDate);
+    d.setDate(d.getDate() - i);
+    const key = dateKey(d);
+    const entry = historyMap.get(key);
+    if (entry && entry.weight != null) return { date: key, weight: entry.weight };
+  }
+  return null;
 }
 function round(n){ return Math.round((Number(n)||0)*10)/10; }
 function clampPct(n){ return Math.max(0, Math.min(100, n)); }
@@ -905,6 +938,43 @@ function dayHitGoals(d){
   return d.calories > 0 && d.calories <= state.goals.calories && d.protein >= state.goals.protein && (d.water||0) >= state.goals.water;
 }
 
+// Backs the "Last 7 days" card. The window is always today back through six
+// days prior (see last7DateKeys), regardless of state.selectedDate — recomputed
+// fresh on every render, so it stays current across refreshes and midnight
+// rollover without needing its own cached state.
+function computeWeekSummary(){
+  const weekDates = last7DateKeys(); // oldest -> today
+  const historyMap = new Map(state.history.map(d => [d.date, d]));
+  const weekDays = weekDates.map(date => historyMap.get(date) || {
+    date, weight:null, water:0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0, mealCount:0,
+  });
+
+  // Protein/calorie averages exclude zero-meal days (weight/water-only or
+  // blank) — same exclusion already used for the rolling 7-day average
+  // elsewhere. Water intentionally does NOT exclude zero-water days: a day
+  // with nothing logged is a genuinely low-water day, not a data gap.
+  const qualifying = weekDays.filter(d => d.mealCount > 0);
+  const avgProtein = qualifying.length ? round(qualifying.reduce((s,d)=>s+d.protein,0) / qualifying.length) : null;
+  const avgCalories = qualifying.length ? round(qualifying.reduce((s,d)=>s+d.calories,0) / qualifying.length) : null;
+  const avgWater = round(weekDays.reduce((s,d)=>s+(d.water||0),0) / weekDays.length);
+
+  // Guard against a misconfigured 0 goal making every day look "hit."
+  const proteinGoalHits = weekDays.filter(d => state.goals.protein > 0 && d.protein >= state.goals.protein).length;
+  const loggedDaysCount = qualifying.length;
+  const totalMealsCount = weekDays.reduce((s,d)=>s+(d.mealCount||0),0);
+
+  const windowStartKey = weekDates[0];
+  const windowEndKey = weekDates[weekDates.length - 1]; // == todayKey()
+  const startPoint = resolveNearestWeight(windowStartKey, historyMap, 30);
+  const endPoint = resolveNearestWeight(windowEndKey, historyMap, 30);
+
+  return {
+    weekDates, weekDays, avgProtein, avgCalories, avgWater,
+    proteinGoalHits, loggedDaysCount, totalMealsCount,
+    windowStartKey, windowEndKey, startPoint, endPoint,
+  };
+}
+
 function renderAuth(){
   const app = document.getElementById('app');
   if (state.authMode === 'check-email') {
@@ -969,14 +1039,31 @@ function renderDashboard(){
   const sortedHistory = [...state.history];
   const weightSeries = state.weightSeries; // independent of the 45-day history window — see loadWeightSeries
   const weightRangeOpt = WEIGHT_RANGE_OPTIONS.find(o => o.key === state.weightRange) || WEIGHT_RANGE_OPTIONS[1];
-  // Days with no meals logged (weight/water-only, or blank) would otherwise drag the
-  // average down while still counting toward "N days" — exclude them before slicing.
-  const last7 = sortedHistory.filter(d => d.mealCount > 0).slice(0,7);
-  const rolling7 = last7.length ? {
-    calories: round(last7.reduce((s,d)=>s+d.calories,0)/last7.length),
-    protein: round(last7.reduce((s,d)=>s+d.protein,0)/last7.length),
-    n: last7.length,
-  } : null;
+  const week = computeWeekSummary();
+
+  let weightChangeHtml;
+  if (!week.startPoint || !week.endPoint || week.startPoint.date === week.endPoint.date) {
+    const reason = (!week.startPoint || !week.endPoint)
+      ? 'Not enough weigh-ins in the last 30 days to compute a change.'
+      : "Only one weigh-in found nearby — can't compute a change.";
+    weightChangeHtml = `<div class="muted" style="font-size:13px;">— <span style="opacity:.8;">${reason}</span></div>`;
+  } else {
+    const delta = round(week.endPoint.weight - week.startPoint.weight);
+    let changeLabel, deltaColor;
+    if (delta > 0) { changeLabel = `▲ ${delta} lbs`; deltaColor = 'var(--coral)'; }
+    else if (delta < 0) { changeLabel = `▼ ${Math.abs(delta)} lbs`; deltaColor = 'var(--lime)'; }
+    else { changeLabel = 'No change'; deltaColor = 'var(--ink)'; }
+    // If either endpoint had to reach outside the 7-day window to find a weigh-in,
+    // say so explicitly rather than presenting a bare weekly delta that implies a
+    // clean 7-day comparison it doesn't actually cover.
+    const startOffWindow = week.startPoint.date !== week.windowStartKey;
+    const endOffWindow = week.endPoint.date !== week.windowEndKey;
+    weightChangeHtml = `
+      <div class="mono" style="font-size:20px; font-weight:600; color:${deltaColor};">${changeLabel}</div>
+      <div class="muted" style="font-size:13px; margin-top:2px;">${round(week.startPoint.weight)} → ${round(week.endPoint.weight)}</div>
+      ${(startOffWindow || endOffWindow) ? `<div class="muted" style="font-size:11px; margin-top:4px;">From ${escapeHtml(monthDay(week.startPoint.date))}${startOffWindow ? ' (nearest before window start)' : ''} to ${escapeHtml(monthDay(week.endPoint.date))}${endOffWindow ? ' (nearest before today)' : ''}</div>` : ''}
+    `;
+  }
 
   app.innerHTML = `
     <div class="between" style="margin-bottom:6px;">
@@ -1175,32 +1262,57 @@ function renderDashboard(){
         </div>`).join('') : ''}
     </div>
 
-    <div class="row" style="align-items:stretch;">
-      <div class="card" style="flex:1 1 280px;">
-        <h2>Today's macros</h2>
-        ${(totals.protein+totals.carbs+totals.fat) > 0
-          ? `<div class="row"><canvas id="macroChart" width="140" height="140"></canvas>
-              <div>
-                <div><span class="legend-dot" style="background:var(--accent)"></span>Protein: <span class="mono">${round(totals.protein)}g</span> <span class="muted">(${macroPercents(totals).protein}%)</span></div>
-                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--lime)"></span>Carbs: <span class="mono">${round(totals.carbs)}g</span> <span class="muted">(${macroPercents(totals).carbs}%)</span></div>
-                <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--plum)"></span>Fat: <span class="mono">${round(totals.fat)}g</span> <span class="muted">(${macroPercents(totals).fat}%)</span></div>
-                <div class="muted" style="font-size:11px; margin-top:8px;">% of calories from each macro</div>
-              </div></div>`
-          : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
-        ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">
-            Today so far: <span class="mono" style="color:${totals.sodium > state.goals.sodium ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sodium)}mg</span> sodium <span style="opacity:0.6;">/ ${state.goals.sodium}mg</span>
-            · <span class="mono" style="color:${totals.sugar > state.goals.sugar ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sugar)}g</span> sugar <span style="opacity:0.6;">/ ${state.goals.sugar}g</span>
-            <span style="opacity:0.7;"> (ballpark)</span>
-          </div>` : ''}
+    <div class="card">
+      <h2>Today's macros</h2>
+      ${(totals.protein+totals.carbs+totals.fat) > 0
+        ? `<div class="row"><canvas id="macroChart" width="140" height="140"></canvas>
+            <div>
+              <div><span class="legend-dot" style="background:var(--accent)"></span>Protein: <span class="mono">${round(totals.protein)}g</span> <span class="muted">(${macroPercents(totals).protein}%)</span></div>
+              <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--lime)"></span>Carbs: <span class="mono">${round(totals.carbs)}g</span> <span class="muted">(${macroPercents(totals).carbs}%)</span></div>
+              <div style="margin-top:6px;"><span class="legend-dot" style="background:var(--plum)"></span>Fat: <span class="mono">${round(totals.fat)}g</span> <span class="muted">(${macroPercents(totals).fat}%)</span></div>
+              <div class="muted" style="font-size:11px; margin-top:8px;">% of calories from each macro</div>
+            </div></div>`
+        : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
+      ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">
+          Today so far: <span class="mono" style="color:${totals.sodium > state.goals.sodium ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sodium)}mg</span> sodium <span style="opacity:0.6;">/ ${state.goals.sodium}mg</span>
+          · <span class="mono" style="color:${totals.sugar > state.goals.sugar ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sugar)}g</span> sugar <span style="opacity:0.6;">/ ${state.goals.sugar}g</span>
+          <span style="opacity:0.7;"> (ballpark)</span>
+        </div>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Last 7 days</h2>
+      <div class="muted" style="font-size:13px; margin-bottom:16px;">${monthDay(week.windowStartKey)} – ${monthDay(week.windowEndKey)}</div>
+
+      <div class="row" style="justify-content:space-between; gap:16px; margin-bottom:18px;">
+        <div style="flex:1 1 0; min-width:84px;">
+          <div class="mono" style="font-size:22px; font-weight:600; color:var(--lime);">${week.avgProtein != null ? week.avgProtein+'g' : '—'}</div>
+          <div class="muted" style="font-size:11px; margin-top:2px;">avg protein <span style="opacity:.7;">/ ${state.goals.protein}g goal</span></div>
+        </div>
+        <div style="flex:1 1 0; min-width:84px;">
+          <div class="mono" style="font-size:22px; font-weight:600; color:${week.avgCalories != null && week.avgCalories > state.goals.calories ? 'var(--coral)' : 'var(--gold)'};">${week.avgCalories != null ? week.avgCalories : '—'}</div>
+          <div class="muted" style="font-size:11px; margin-top:2px;">avg calories <span style="opacity:.7;">/ ${state.goals.calories} cap</span></div>
+        </div>
+        <div style="flex:1 1 0; min-width:84px;">
+          <div class="mono" style="font-size:22px; font-weight:600; color:var(--turquoise);">${week.avgWater}oz</div>
+          <div class="muted" style="font-size:11px; margin-top:2px;">avg water <span style="opacity:.7;">/ ${state.goals.water}oz goal</span></div>
+        </div>
       </div>
-      <div class="card" style="flex:1 1 200px;">
-        <h2>7-day average</h2>
-        ${rolling7 ? `
-          <div class="muted" style="font-size:13px; margin-bottom:4px;">Based on ${rolling7.n} logged day${rolling7.n>1?'s':''}</div>
-          <div class="mono" style="font-size:22px; font-weight:600; color:${rolling7.calories > state.goals.calories ? 'var(--coral)' : 'var(--turquoise)'};">${rolling7.calories} cal</div>
-          <div class="mono" style="font-size:22px; font-weight:600; color:var(--gold);">${rolling7.protein}g protein</div>
-        ` : `<div class="muted" style="font-size:13px;">No days logged yet.</div>`}
+
+      <div class="muted" style="font-size:11px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">PROTEIN GOAL</div>
+      <div class="row" style="gap:6px; margin-bottom:6px;">
+        ${week.weekDays.map(d => {
+          const hit = state.goals.protein > 0 && d.protein >= state.goals.protein;
+          const label = `${monthDay(d.date)}: ${round(d.protein)}g protein`;
+          return `<div title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}" role="img" style="width:28px; height:28px; border-radius:7px; background:${hit ? 'var(--lime)' : 'transparent'}; border:1.5px solid ${hit ? 'var(--lime)' : 'var(--border)'};"></div>`;
+        }).join('')}
       </div>
+      <div class="muted" style="font-size:12px; margin-bottom:16px;">${week.proteinGoalHits} of 7 days</div>
+
+      <div class="muted" style="font-size:11px; margin-bottom:4px; font-weight:600; letter-spacing:.03em;">WEIGHT CHANGE</div>
+      ${weightChangeHtml}
+
+      <div class="muted" style="font-size:12px; margin-top:14px; border-top:1px dashed var(--border); padding-top:10px;">Logged ${week.loggedDaysCount} of 7 days · ${week.totalMealsCount} meal${week.totalMealsCount===1?'':'s'}</div>
     </div>
 
     <div class="card">
