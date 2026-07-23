@@ -121,7 +121,7 @@ const state = {
 let macroChartInstance = null;
 let weightChartInstance = null;
 const pendingDeleteMealIds = new Set();
-let pendingMealDeleteTimer = null;
+const pendingMealDeleteTimers = new Map();
 
 // ---------- Helpers ----------
 function pad(n){ return String(n).padStart(2,'0'); }
@@ -273,47 +273,67 @@ function commitWeightFromInput(){
   });
 }
 
-async function addWater(amount){
+let waterSaveQueue = Promise.resolve();
+
+function addWater(amount){
   const current = (state.dayRow && state.dayRow.water) || 0;
-  const ok = await saveDayField({ water: round(current + amount) });
-  if (ok) {
-    state.lastWaterUndo = { amount };
-    render();
-    clearTimeout(window.__waterUndoTimer);
-    window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 10000);
-  }
+  const optimisticWater = round(current + amount);
+  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
+  state.lastWaterUndo = { amount };
+  render();
+  clearTimeout(window.__waterUndoTimer);
+  window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 10000);
+
+  waterSaveQueue = waterSaveQueue.then(() => saveDayField({ water: optimisticWater }));
+  return waterSaveQueue;
 }
 
-async function undoWaterAdd(){
+function undoWaterAdd(){
   if (!state.lastWaterUndo) return;
   const amount = state.lastWaterUndo.amount;
   const current = (state.dayRow && state.dayRow.water) || 0;
+  const optimisticWater = round(Math.max(0, current - amount));
+  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
   state.lastWaterUndo = null;
   clearTimeout(window.__waterUndoTimer);
-  await saveDayField({ water: round(Math.max(0, current - amount)) });
+  render();
+  waterSaveQueue = waterSaveQueue.then(() => saveDayField({ water: optimisticWater }));
+  return waterSaveQueue;
 }
 
 function deleteMeal(id){
   pendingDeleteMealIds.add(id);
   render();
-  clearTimeout(pendingMealDeleteTimer);
+  clearTimeout(pendingMealDeleteTimers.get(id));
   showToast('Meal removed', () => {
-    clearTimeout(pendingMealDeleteTimer);
+    clearTimeout(pendingMealDeleteTimers.get(id));
+    pendingMealDeleteTimers.delete(id);
     pendingDeleteMealIds.delete(id);
     render();
   });
-  pendingMealDeleteTimer = setTimeout(commitPendingMealDeletes, MEAL_DELETE_UNDO_MS);
+  const timer = setTimeout(() => {
+    pendingMealDeleteTimers.delete(id);
+    commitPendingMealDeletes([id]);
+  }, MEAL_DELETE_UNDO_MS);
+  pendingMealDeleteTimers.set(id, timer);
 }
 
-async function commitPendingMealDeletes(){
-  const ids = [...pendingDeleteMealIds];
+async function commitPendingMealDeletes(ids){
   if (!ids.length) return;
   const { error } = await supabaseClient.from('meals').delete().in('id', ids);
-  pendingDeleteMealIds.clear();
+  ids.forEach(id => pendingDeleteMealIds.delete(id));
   if (error) { state.loadError = 'Delete failed: ' + error.message; render(); return; }
   state.meals = state.meals.filter(m => !ids.includes(m.id));
   await loadHistory();
   render();
+}
+
+function flushPendingMealDeletes(){
+  const ids = [...pendingDeleteMealIds];
+  if (!ids.length) return;
+  ids.forEach(id => clearTimeout(pendingMealDeleteTimers.get(id)));
+  pendingMealDeleteTimers.clear();
+  commitPendingMealDeletes(ids);
 }
 
 async function confirmPendingMeal(){
@@ -585,7 +605,7 @@ function renderAuth(){
     <div class="auth-box card">
       <h1 style="font-size:22px; margin-bottom:4px;">Health Tracker</h1>
       <p class="muted" style="font-size:13px; margin-bottom:16px;">${state.authMode === 'signup' ? 'Create an account' : 'Sign in to your log'}</p>
-      ${state.authError ? `<div class="err">${state.authError}</div>` : ''}
+      ${state.authError ? `<div class="err">${escapeHtml(state.authError)}</div>` : ''}
       <form id="authForm">
         <div style="margin-bottom:10px;">
           <input id="authEmail" type="email" placeholder="Email" required style="width:100%;">
@@ -638,7 +658,7 @@ function renderDashboard(){
       </div>
     </div>
 
-    ${state.loadError ? `<div class="err">${state.loadError}</div>` : ''}
+    ${state.loadError ? `<div class="err">${escapeHtml(state.loadError)}</div>` : ''}
 
     <div class="card">
       <div class="between" style="margin-bottom:16px;">
@@ -724,7 +744,7 @@ function renderDashboard(){
         <button id="manualBtn">Enter numbers manually</button>
       </div>
 
-      ${state.estimateError ? `<div class="err" style="margin-top:10px;">${state.estimateError}</div>` : ''}
+      ${state.estimateError ? `<div class="err" style="margin-top:10px;">${escapeHtml(state.estimateError)}</div>` : ''}
 
       ${state.pendingMeal ? `
         <div class="card" style="background:var(--bg); margin-top:14px; margin-bottom:0;">
@@ -989,6 +1009,11 @@ function render(){
 }
 
 // ---------- Boot ----------
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushPendingMealDeletes();
+});
+window.addEventListener('pagehide', flushPendingMealDeletes);
+
 supabaseClient.auth.onAuthStateChange((event, session) => {
   const hadSession = !!state.session;
   state.session = session;
