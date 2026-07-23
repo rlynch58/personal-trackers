@@ -120,8 +120,8 @@ const state = {
 
 let macroChartInstance = null;
 let weightChartInstance = null;
-const pendingDeleteMealIds = new Set();
-const pendingMealDeleteTimers = new Map();
+const pendingUndoMeals = new Map(); // id -> { meal, timer } for meals deleted but still within the undo window
+let loadToken = 0; // bumped on every day-load request; stale responses are discarded
 
 // ---------- Helpers ----------
 function pad(n){ return String(n).padStart(2,'0'); }
@@ -190,7 +190,7 @@ function macroPercents(totals){
 }
 
 // ---------- Data loading ----------
-async function loadDay(date){
+async function loadDayForDate(date){
   const userId = state.session.user.id;
   const [dayRes, mealsRes] = await Promise.all([
     supabaseClient.from('health_logs').select('*').eq('user_id', userId).eq('log_date', date).maybeSingle(),
@@ -198,8 +198,7 @@ async function loadDay(date){
   ]);
   if (dayRes.error) throw dayRes.error;
   if (mealsRes.error) throw mealsRes.error;
-  state.dayRow = dayRes.data || null;
-  state.meals = mealsRes.data || [];
+  return { dayRow: dayRes.data || null, meals: mealsRes.data || [] };
 }
 
 async function loadHistory(){
@@ -232,31 +231,41 @@ async function loadHistory(){
 }
 
 async function refreshAll(){
+  const date = state.selectedDate;
+  const token = ++loadToken;
   try {
-    await Promise.all([loadDay(state.selectedDate), loadHistory()]);
+    const [dayData] = await Promise.all([loadDayForDate(date), loadHistory()]);
+    if (token !== loadToken) return; // a newer load has since started — discard this one
+    state.dayRow = dayData.dayRow;
+    state.meals = dayData.meals;
     state.loadError = null;
   } catch (e) {
+    if (token !== loadToken) return;
     state.loadError = "Couldn't load your data — check your connection and try refreshing.";
   }
   render();
 }
 
 // ---------- Mutations ----------
-async function saveDayField(patch){
+// date/baseRow are captured explicitly by the caller at the moment the save is
+// requested, not read from global state here — state.selectedDate/state.dayRow
+// may have moved on to a different day by the time this actually runs.
+async function saveDayField(date, baseRow, patch){
   const userId = state.session.user.id;
-  const current = state.dayRow || {};
-  const next = { user_id: userId, log_date: state.selectedDate, weight: current.weight ?? null, water: current.water ?? 0, ...patch };
+  const current = baseRow || {};
+  const next = { user_id: userId, log_date: date, weight: current.weight ?? null, water: current.water ?? 0, ...patch };
   const { data, error } = await supabaseClient
     .from('health_logs')
     .upsert(next, { onConflict: 'user_id,log_date' })
     .select()
     .single();
   if (error) { state.loadError = 'Save failed: ' + error.message; render(); return false; }
-  state.dayRow = data;
-  const h = state.history.find(d => d.date === state.selectedDate);
+  // Only clobber the live dayRow if the user is still looking at the date this save targeted.
+  if (date === state.selectedDate) { state.dayRow = data; }
+  const h = state.history.find(d => d.date === date);
   if (h) { h.weight = data.weight; h.water = data.water; }
   else {
-    state.history.push({ date: state.selectedDate, weight: data.weight, water: data.water || 0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 });
+    state.history.push({ date: date, weight: data.weight, water: data.water || 0, calories:0, protein:0, carbs:0, fat:0, sodium:0, sugar:0 });
     state.history.sort((a,b)=> a.date < b.date ? 1 : -1);
   }
   render();
@@ -266,7 +275,10 @@ async function saveDayField(patch){
 function commitWeightFromInput(){
   const el = document.getElementById('weightInput');
   const n = parseFloat(el.value);
-  saveDayField({ weight: isNaN(n) ? null : round(n) }).then(() => {
+  const date = state.selectedDate;
+  const baseRow = state.dayRow;
+  saveDayField(date, baseRow, { weight: isNaN(n) ? null : round(n) }).then((ok) => {
+    if (!ok) return; // save failed — saveDayField already surfaced state.loadError
     state.weightJustSaved = true;
     render();
     setTimeout(() => { state.weightJustSaved = false; render(); }, 1800);
@@ -275,65 +287,95 @@ function commitWeightFromInput(){
 
 let waterSaveQueue = Promise.resolve();
 
+function queueWaterSave(date, baseRow, water){
+  waterSaveQueue = waterSaveQueue
+    .then(() => saveDayField(date, baseRow, { water }))
+    .catch((err) => {
+      // A rejected link must never be left dangling on waterSaveQueue — that would
+      // permanently skip every save chained on afterward. Surface it and move on.
+      console.error('Water save failed:', err);
+      state.loadError = 'Save failed: ' + (err && err.message ? err.message : 'Something went wrong.');
+      render();
+    });
+  return waterSaveQueue;
+}
+
 function addWater(amount){
-  const current = (state.dayRow && state.dayRow.water) || 0;
+  const date = state.selectedDate;
+  const baseRow = state.dayRow;
+  const current = (baseRow && baseRow.water) || 0;
   const optimisticWater = round(current + amount);
-  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
+  state.dayRow = { ...(baseRow || {}), water: optimisticWater };
   state.lastWaterUndo = { amount };
   render();
   clearTimeout(window.__waterUndoTimer);
   window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 10000);
 
-  waterSaveQueue = waterSaveQueue.then(() => saveDayField({ water: optimisticWater }));
-  return waterSaveQueue;
+  return queueWaterSave(date, baseRow, optimisticWater);
 }
 
 function undoWaterAdd(){
   if (!state.lastWaterUndo) return;
   const amount = state.lastWaterUndo.amount;
-  const current = (state.dayRow && state.dayRow.water) || 0;
+  const date = state.selectedDate;
+  const baseRow = state.dayRow;
+  const current = (baseRow && baseRow.water) || 0;
   const optimisticWater = round(Math.max(0, current - amount));
-  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
+  state.dayRow = { ...(baseRow || {}), water: optimisticWater };
   state.lastWaterUndo = null;
   clearTimeout(window.__waterUndoTimer);
   render();
-  waterSaveQueue = waterSaveQueue.then(() => saveDayField({ water: optimisticWater }));
-  return waterSaveQueue;
+  return queueWaterSave(date, baseRow, optimisticWater);
 }
 
+// Deletes commit immediately (rather than waiting out the undo window before
+// committing) so a browser killing in-flight requests on unload, or the undo
+// window expiring while the app is backgrounded on mobile, can never leave a
+// "removed" meal stuck undeleted server-side. Undo re-inserts the cached row.
 function deleteMeal(id){
-  pendingDeleteMealIds.add(id);
+  const idx = state.meals.findIndex(m => m.id === id);
+  if (idx === -1) return;
+  const meal = state.meals[idx];
+  state.meals = state.meals.filter(m => m.id !== id);
   render();
-  clearTimeout(pendingMealDeleteTimers.get(id));
-  showToast('Meal removed', () => {
-    clearTimeout(pendingMealDeleteTimers.get(id));
-    pendingMealDeleteTimers.delete(id);
-    pendingDeleteMealIds.delete(id);
-    render();
+
+  const existing = pendingUndoMeals.get(id);
+  if (existing) clearTimeout(existing.timer);
+  const timer = setTimeout(() => { pendingUndoMeals.delete(id); }, MEAL_DELETE_UNDO_MS);
+  pendingUndoMeals.set(id, { meal, timer });
+
+  showToast('Meal removed', () => undoDeleteMeal(id));
+
+  supabaseClient.from('meals').delete().eq('id', id).then(({ error }) => {
+    if (error) {
+      const entry = pendingUndoMeals.get(id);
+      if (entry) { clearTimeout(entry.timer); pendingUndoMeals.delete(id); }
+      // Delete failed server-side but we already removed it from the UI — put it back.
+      if (meal.log_date === state.selectedDate) {
+        state.meals.push(meal);
+        state.meals.sort((a,b)=> (a.created_at||'') < (b.created_at||'') ? -1 : 1);
+      }
+      state.loadError = 'Delete failed: ' + error.message;
+      render();
+      return;
+    }
+    loadHistory().then(render);
   });
-  const timer = setTimeout(() => {
-    pendingMealDeleteTimers.delete(id);
-    commitPendingMealDeletes([id]);
-  }, MEAL_DELETE_UNDO_MS);
-  pendingMealDeleteTimers.set(id, timer);
 }
 
-async function commitPendingMealDeletes(ids){
-  if (!ids.length) return;
-  const { error } = await supabaseClient.from('meals').delete().in('id', ids);
-  ids.forEach(id => pendingDeleteMealIds.delete(id));
-  if (error) { state.loadError = 'Delete failed: ' + error.message; render(); return; }
-  state.meals = state.meals.filter(m => !ids.includes(m.id));
+async function undoDeleteMeal(id){
+  const entry = pendingUndoMeals.get(id);
+  if (!entry) return; // undo window already expired — nothing cached to restore
+  clearTimeout(entry.timer);
+  pendingUndoMeals.delete(id);
+  const { data, error } = await supabaseClient.from('meals').insert(entry.meal).select().single();
+  if (error) { state.loadError = 'Could not undo delete: ' + error.message; render(); return; }
+  if (entry.meal.log_date === state.selectedDate) {
+    state.meals.push(data);
+    state.meals.sort((a,b)=> (a.created_at||'') < (b.created_at||'') ? -1 : 1);
+  }
   await loadHistory();
   render();
-}
-
-function flushPendingMealDeletes(){
-  const ids = [...pendingDeleteMealIds];
-  if (!ids.length) return;
-  ids.forEach(id => clearTimeout(pendingMealDeleteTimers.get(id)));
-  pendingMealDeleteTimers.clear();
-  commitPendingMealDeletes(ids);
 }
 
 async function confirmPendingMeal(){
@@ -495,10 +537,20 @@ async function handlePhotoSelect(e){
 
 function setSelectedDate(d){
   state.selectedDate = d;
-  loadDay(d).then(() => {
+  // A water add/undo affordance for the previous day must never survive the switch —
+  // otherwise tapping Undo after changing days would subtract water from the wrong row.
+  clearTimeout(window.__waterUndoTimer);
+  state.lastWaterUndo = null;
+
+  const token = ++loadToken;
+  loadDayForDate(d).then(({ dayRow, meals }) => {
+    if (token !== loadToken) return; // superseded by a later date switch — discard
+    state.dayRow = dayRow;
+    state.meals = meals;
     state.loadError = null;
     render();
   }).catch(() => {
+    if (token !== loadToken) return;
     state.dayRow = null;
     state.meals = [];
     state.loadError = "Couldn't load that day — check your connection and try refreshing.";
@@ -632,7 +684,7 @@ function renderAuth(){
 
 function renderDashboard(){
   const app = document.getElementById('app');
-  const visibleMeals = state.meals.filter(m => !pendingDeleteMealIds.has(m.id));
+  const visibleMeals = state.meals; // deletes now remove from state.meals immediately, no pending-hide filter needed
   const totals = totalsOf(visibleMeals);
   const water = (state.dayRow && state.dayRow.water) || 0;
   const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
@@ -1009,10 +1061,9 @@ function render(){
 }
 
 // ---------- Boot ----------
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushPendingMealDeletes();
-});
-window.addEventListener('pagehide', flushPendingMealDeletes);
+// No visibilitychange/pagehide flush needed anymore: meal deletes commit to the
+// database immediately (see deleteMeal), so there's nothing left pending to flush
+// when the tab is backgrounded or closed.
 
 supabaseClient.auth.onAuthStateChange((event, session) => {
   const hadSession = !!state.session;
