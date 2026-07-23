@@ -580,7 +580,11 @@ function saveSettingsFromInputs(){
     state.settingsSaving = false;
     state.settingsSaved = true;
     render();
-    setTimeout(() => { state.settingsSaved = false; render(); }, 1800);
+    setTimeout(() => {
+      state.settingsSaved = false;
+      state.settingsOpen = false; // auto-close so the updated header/rings are visible
+      render();
+    }, 1500);
   }).catch((err) => {
     state.settingsSaving = false;
     state.settingsError = 'Could not save settings: ' + (err && err.message ? err.message : 'Something went wrong.');
@@ -887,7 +891,10 @@ function renderDashboard(){
         <div class="num-field"><label>Sodium (mg)</label><input type="number" inputmode="decimal" id="settingsPresetSodium" value="${state.proteinPreset.sodium}"></div>
         <div class="num-field"><label>Sugar (g)</label><input type="number" inputmode="decimal" id="settingsPresetSugar" value="${state.proteinPreset.sugar}"></div>
       </div>
-      <button class="primary" id="saveSettingsBtn" ${state.settingsSaving ? 'disabled' : ''}>${state.settingsSaving ? 'Saving…' : 'Save settings'}</button>
+      <div class="row">
+        <button class="primary" id="saveSettingsBtn" ${state.settingsSaving ? 'disabled' : ''}>${state.settingsSaving ? 'Saving…' : 'Save settings'}</button>
+        <button id="closeSettingsBtn" style="border:none;">Close</button>
+      </div>
     </div>` : ''}
 
     <div class="card">
@@ -1088,7 +1095,7 @@ function renderDashboard(){
                   <div class="muted" style="font-size:11px;">weight</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > state.goals.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > state.goals.calories ? 'var(--coral)' : (d.calories > 0 ? 'var(--sage)' : 'var(--ink)')}">${round(d.calories)}</div>
                   <div class="muted" style="font-size:11px;">cal</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
@@ -1096,7 +1103,7 @@ function renderDashboard(){
                   <div class="muted" style="font-size:11px;">protein</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${(d.water||0) >= state.goals.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${(d.water||0) >= state.goals.water ? 'var(--sage)' : 'var(--gold)'}">${d.water||0}oz</div>
                   <div class="muted" style="font-size:11px;">water</div>
                 </div>
               </div>
@@ -1110,6 +1117,8 @@ function renderDashboard(){
   document.getElementById('settingsBtn').addEventListener('click', toggleSettings);
   const saveSettingsBtn = document.getElementById('saveSettingsBtn');
   if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsFromInputs);
+  const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+  if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', toggleSettings);
   document.getElementById('proteinPresetBtn').addEventListener('click', logProteinPreset);
   document.getElementById('refreshBtn').addEventListener('click', () => {
     state.mealTextValue = '';
