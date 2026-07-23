@@ -79,7 +79,7 @@
 const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
 const SUPA_ANON_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
 const GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -427,6 +427,22 @@ async function confirmMoveMeal(id){
   const input = document.querySelector(`.move-date-input[data-id="${id}"]`);
   const newDate = input && input.value;
   if (!newDate) return;
+  if (newDate === state.selectedDate) {
+    // Moving to the date it's already on is a no-op server-side, but the old code
+    // still filtered it out of state.meals afterward — making it vanish from the UI
+    // even though nothing actually changed in the DB.
+    state.movingMealId = null;
+    render();
+    return;
+  }
+  if (newDate > todayKey()) {
+    // The date input's max attribute only constrains the picker UI — a typed date
+    // still reaches here. A future log_date would make the meal unreachable, since
+    // the app has no way to navigate to a day beyond today.
+    state.loadError = "Can't move a meal to a future date.";
+    render();
+    return;
+  }
   const token = loadToken;
   const { error } = await supabaseClient.from('meals').update({ log_date: newDate }).eq('id', id);
   if (error) { state.loadError = 'Move failed: ' + error.message; render(); return; }
