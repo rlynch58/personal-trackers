@@ -558,8 +558,15 @@ async function loadRecentMeals(){
   const userId = state.session.user.id;
   state.recentMealsLoading = true;
   render();
+  // Scoped by date (last 5 days) rather than a bare row count, so a light
+  // logging day doesn't get crowded out and the window stays consistent
+  // regardless of how many meals get logged per day. The row limit is just a
+  // safety cap for an unusually heavy 5-day stretch.
+  const since = new Date();
+  since.setDate(since.getDate() - 5);
+  const sinceKey = dateKey(since);
   const { data, error } = await supabaseClient.from('meals')
-    .select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(60);
+    .select('*').eq('user_id', userId).gte('log_date', sinceKey).order('created_at', { ascending: false }).limit(150);
   state.recentMealsLoading = false;
   if (error) { state.recentMeals = []; render(); return; }
   const seen = new Set();
