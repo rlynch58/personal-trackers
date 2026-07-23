@@ -587,6 +587,81 @@ async function confirmMoveMeal(id){
   render();
 }
 
+// Lowercases, strips punctuation and connector words, and returns the
+// remaining words as a Set — the basis for fuzzy-matching meal names that
+// differ in wording/order/connectors but describe the same recurring meal
+// (e.g. "Kolache + Donut" vs "Kolache & Chocolate Iced Donut").
+function normalizeMealNameTokens(name){
+  const CONNECTOR_WORDS = new Set(['and', 'with', 'w']); // "w" catches "w/" once the slash is stripped below
+  const cleaned = String(name || '')
+    .toLowerCase()
+    .replace(/[+&]/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ') // strips remaining punctuation, incl. the slash in "w/"
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return new Set();
+  return new Set(cleaned.split(' ').filter(t => t && !CONNECTOR_WORDS.has(t)));
+}
+
+// Jaccard similarity (intersection / union) of two token sets. Word order and
+// connectors are already gone by this point, so this measures shared "core
+// nouns" — the thing that actually distinguishes one recurring meal from
+// another — rather than raw string edit distance.
+function jaccardSimilarity(setA, setB){
+  if (setA.size === 0 && setB.size === 0) return 0;
+  let intersectionSize = 0;
+  setA.forEach(t => { if (setB.has(t)) intersectionSize++; });
+  const unionSize = setA.size + setB.size - intersectionSize;
+  return unionSize === 0 ? 0 : intersectionSize / unionSize;
+}
+
+// Collapses near-duplicate meal names (see normalizeMealNameTokens /
+// jaccardSimilarity above) into single-link clusters, then picks one real
+// logged row per cluster to represent it — never a blended/averaged one,
+// since quick-add has to insert an actual meal. `meals` must already be
+// ordered most-recent-first (loadRecentMeals's query already does this).
+function dedupeRecentMeals(meals, maxSlots){
+  // Tuned against this app's real data: the Shipley's-kolache-style
+  // near-duplicates that prompted this feature score ~0.44-1.0 pairwise
+  // Jaccard once normalized, while genuinely distinct short names like
+  // "Chicken salad" vs "Chicken sandwich" score ~0.33. 0.4 sits between the
+  // two with margin on both sides, erring toward under-merging as instructed
+  // (a missed merge costs a slot; a wrong merge hides a real meal).
+  const MEAL_NAME_SIMILARITY_THRESHOLD = 0.4;
+
+  const clusters = []; // [{ members: [{ meal, tokens }] }]
+  meals.forEach(meal => {
+    const tokens = normalizeMealNameTokens(meal.name);
+    const cluster = clusters.find(c => c.members.some(mem => jaccardSimilarity(tokens, mem.tokens) > MEAL_NAME_SIMILARITY_THRESHOLD));
+    if (cluster) cluster.members.push({ meal, tokens });
+    else clusters.push({ members: [{ meal, tokens }] });
+  });
+
+  const collapsed = clusters.map(cluster => {
+    // Within the cluster, group by exact (trimmed) name — these are the
+    // literal "variants" — and let the most-frequently-typed one win, tied
+    // on which variant's most recent entry is more recent. meals arrives
+    // most-recent-first, so groups[key][0] is already that variant's latest row.
+    const groups = new Map();
+    cluster.members.forEach(({ meal }) => {
+      const key = meal.name.trim();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(meal);
+    });
+    let winner = null;
+    groups.forEach((mealsForKey) => {
+      if (!winner
+          || mealsForKey.length > winner.length
+          || (mealsForKey.length === winner.length && mealsForKey[0].created_at > winner[0].created_at)) {
+        winner = mealsForKey;
+      }
+    });
+    return winner[0];
+  });
+
+  return collapsed.slice(0, maxSlots);
+}
+
 async function loadRecentMeals(){
   const userId = state.session.user.id;
   state.recentMealsLoading = true;
@@ -604,15 +679,7 @@ async function loadRecentMeals(){
     .select('*').eq('user_id', userId).gte('log_date', sinceKey).order('created_at', { ascending: false }).limit(150);
   state.recentMealsLoading = false;
   if (error) { state.recentMeals = []; render(); return; }
-  const seen = new Set();
-  const distinct = [];
-  (data || []).forEach(m => {
-    const key = m.name.trim().toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    distinct.push(m);
-  });
-  state.recentMeals = distinct.slice(0, 15);
+  state.recentMeals = dedupeRecentMeals(data || [], 15);
   render();
 }
 
