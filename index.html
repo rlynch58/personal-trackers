@@ -579,7 +579,7 @@ async function loadRecentMeals(){
     seen.add(key);
     distinct.push(m);
   });
-  state.recentMeals = distinct.slice(0, 8);
+  state.recentMeals = distinct.slice(0, 15);
   render();
 }
 
