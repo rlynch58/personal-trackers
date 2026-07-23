@@ -81,7 +81,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.10';
+const APP_VERSION = '1.11';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -890,16 +890,31 @@ async function signOut(){
 // ---------- Rendering ----------
 // size is configurable so the protein ring can be rendered as the visual hero
 // (larger) while calories/water stay secondary — see the ring row in renderDashboard.
-function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88){
+// ghostPct (protein pace indicator only — null for every other ring) draws a dim
+// "this much is missing" arc from the actual position out to the expected-pace
+// position. Drawn before the actual-progress circle in source order so the real
+// progress arc always paints on top of it.
+function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88, ghostPct=null){
   const r = size/2 - 4.5;
   const c = size/2;
   const circumference = 2 * Math.PI * r;
-  const offset = circumference * (1 - clampPct(pct)/100);
+  const clampedPct = clampPct(pct);
+  const offset = circumference * (1 - clampedPct/100);
   const fontSize = Math.round(size * 0.17);
+  let ghostArc = '';
+  if (ghostPct != null && ghostPct > clampedPct) {
+    const clampedGhostPct = clampPct(ghostPct);
+    const segLen = circumference * (clampedGhostPct - clampedPct) / 100;
+    const gapLen = circumference - segLen;
+    ghostArc = `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--gold)" stroke-width="9" opacity="0.35"
+      stroke-dasharray="${segLen} ${gapLen}" stroke-dashoffset="${offset}" stroke-linecap="round"
+      transform="rotate(-90 ${c} ${c})"></circle>`;
+  }
   return `
     <div class="ring-wrap">
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
         <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${track}" stroke-width="9"></circle>
+        ${ghostArc}
         <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="9"
           stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round"
           transform="rotate(-90 ${c} ${c})"></circle>
@@ -936,6 +951,34 @@ function dayBadge(d, size=40){
 function dayHitGoals(d){
   if (!d) return false;
   return d.calories > 0 && d.calories <= state.goals.calories && d.protein >= state.goals.protein && (d.water||0) >= state.goals.water;
+}
+
+// Active window is 7:00 AM - 10:00 PM local time (900 minutes). Returns the
+// expected protein at this exact moment, clamped to [0, goal] — or null when
+// there's nothing to show: no goal configured, or outside the active window.
+// Always reads a fresh `new Date()`, so it self-corrects across midnight
+// rollover the same way every other date-derived value in this file does.
+function computeProteinPace(){
+  const goal = state.goals.protein;
+  if (!goal || goal <= 0) return null;
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
+  const minutesSinceStart = (now - startOfDay) / 60000;
+  if (minutesSinceStart < 0 || minutesSinceStart > 900) return null; // before 7am, or after 10pm — stays silent rather than nagging
+  return Math.max(0, Math.min(goal, goal * (minutesSinceStart / 900)));
+}
+
+// actual/expected are both in grams. Returns null only if called incorrectly;
+// callers should already have checked computeProteinPace() didn't return null.
+function proteinPaceLabel(actual, expected){
+  const deficit = Math.round(expected - actual); // positive = behind pace, negative = ahead
+  if (Math.abs(deficit) <= 10) return { text: 'On pace', color: 'var(--lime)', bg: 'var(--sage-light)' };
+  if (deficit < 0) return { text: `${Math.abs(deficit)}g ahead of pace`, color: 'var(--lime)', bg: 'var(--sage-light)' };
+  if (deficit < 30) return { text: `${deficit}g behind pace`, color: 'var(--gold)', bg: 'var(--gold-light)' };
+  // Reuse the user's configured Premier Protein preset size rather than hardcoding 30g again.
+  const shakeSize = (state.proteinPreset && state.proteinPreset.protein > 0) ? state.proteinPreset.protein : DEFAULT_PROTEIN_PRESET.protein;
+  const shakes = Math.ceil(deficit / shakeSize);
+  return { text: `${deficit}g behind — ${shakes} shake${shakes===1?'':'s'}`, color: 'var(--coral)', bg: 'var(--coral-light)' };
 }
 
 // Backs the "Last 7 days" card. The window is always today back through six
@@ -1041,6 +1084,13 @@ function renderDashboard(){
   const weightRangeOpt = WEIGHT_RANGE_OPTIONS.find(o => o.key === state.weightRange) || WEIGHT_RANGE_OPTIONS[1];
   const week = computeWeekSummary();
 
+  // Pace only makes sense against the actual clock "right now," so it's only
+  // shown while looking at today — not when browsing a past day's log.
+  const expectedProtein = (state.selectedDate === todayKey()) ? computeProteinPace() : null;
+  const proteinGoalPct = state.goals.protein > 0 ? clampPct((totals.protein/state.goals.protein)*100) : 0;
+  const expectedProteinPct = (expectedProtein != null && state.goals.protein > 0) ? clampPct((expectedProtein/state.goals.protein)*100) : null;
+  const paceInfo = (expectedProtein != null) ? proteinPaceLabel(totals.protein, expectedProtein) : null;
+
   let weightChangeHtml;
   if (!week.startPoint || !week.endPoint || week.startPoint.date === week.endPoint.date) {
     const reason = (!week.startPoint || !week.endPoint)
@@ -1135,7 +1185,10 @@ function renderDashboard(){
       </div>
 
       <div class="row" style="justify-content:center; align-items:center; gap:22px; margin-bottom:8px;">
-        ${ring((totals.protein/state.goals.protein)*100, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', state.goals.protein, null, false, 128)}
+        <div style="display:flex; flex-direction:column; align-items:center;">
+          ${ring(proteinGoalPct, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', state.goals.protein, null, false, 128, expectedProteinPct)}
+          ${paceInfo ? `<div style="margin-top:8px; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; background:${paceInfo.bg}; color:${paceInfo.color};">${paceInfo.text}</div>` : ''}
+        </div>
         <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
           ${calOver ? `
             <div style="background:rgba(255,133,133,.12); border-radius:10px; padding:5px 4px; text-align:center;">
@@ -1530,6 +1583,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') checkMidnightRollover();
 });
 window.addEventListener('focus', checkMidnightRollover);
+
+// The protein pace indicator is a function of the current clock, not just of
+// what's been logged — it needs to advance even if the user never touches the
+// page. This is a page-lifetime interval (never torn down), same as the
+// visibilitychange/focus listeners above; there's no logout-driven cleanup
+// path for those either, so this doesn't introduce a new class of leak.
+setInterval(() => { checkMidnightRollover(); render(); }, 60000);
 
 // onAuthStateChange fires once immediately with the current session (event
 // INITIAL_SESSION) as soon as it's subscribed, so it alone owns boot — a
