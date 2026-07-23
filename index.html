@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Health">
 <meta name="theme-color" content="#0F2A2B">
 <title>Health Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2/dist/umd/supabase.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
 
@@ -81,7 +81,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -150,14 +150,37 @@ function prettyDateFull(key){
   const dt = new Date(y, m-1, d);
   return dt.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
 }
+function formatTime(iso){
+  if (!iso) return '';
+  const dt = new Date(iso);
+  if (isNaN(dt.getTime())) return '';
+  return dt.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+}
 function round(n){ return Math.round((Number(n)||0)*10)/10; }
 function clampPct(n){ return Math.max(0, Math.min(100, n)); }
-function fileToBase64(file){
+// Downscales to at most maxDim on the longest side and re-encodes as JPEG
+// before it ever reaches the estimate call — a raw phone photo can be several
+// MB and multiple thousand px, which is slow over cellular and can trip the
+// edge function's payload limit for no benefit to estimate quality.
+function downscaleImageToBase64(file, maxDim=1024, quality=0.8){
   return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result.split(',')[1]);
-    r.onerror = () => reject(new Error('read failed'));
-    r.readAsDataURL(file);
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else { width = Math.round(width * (maxDim / height)); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(objectUrl);
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve({ base64: dataUrl.split(',')[1], mediaType: 'image/jpeg' });
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('image load failed')); };
+    img.src = objectUrl;
   });
 }
 function escapeHtml(s){
@@ -681,6 +704,7 @@ function startManualMeal(){
 }
 
 function resetMealInputs(){
+  if (state.photo && state.photo.previewUrl) URL.revokeObjectURL(state.photo.previewUrl);
   state.pendingMeal = null; state.estimateError = null; state.photo = null; state.mealTextValue = ''; state.photoNote = '';
   render();
 }
@@ -718,9 +742,10 @@ async function runEstimate(){
 async function handlePhotoSelect(e){
   const file = e.target.files && e.target.files[0];
   if (!file) return;
+  if (state.photo && state.photo.previewUrl) URL.revokeObjectURL(state.photo.previewUrl); // don't leak the previous preview's blob URL
   try {
-    const base64 = await fileToBase64(file);
-    state.photo = { base64, mediaType: file.type || 'image/jpeg', previewUrl: URL.createObjectURL(file) };
+    const { base64, mediaType } = await downscaleImageToBase64(file);
+    state.photo = { base64, mediaType, previewUrl: URL.createObjectURL(file) };
   } catch {
     state.estimateError = "Couldn't read that photo — try another.";
   }
@@ -800,6 +825,22 @@ async function handleAuthSubmit(e){
   }
 }
 
+async function handleForgotPassword(){
+  const email = (document.getElementById('authEmail').value || '').trim();
+  if (!email) { state.authError = 'Enter your email above first.'; render(); return; }
+  state.authError = null; state.authBusy = true; render();
+  try {
+    const { error } = await supabaseClient.auth.resetPasswordForEmail(email);
+    if (error) throw error;
+    state.authMode = 'reset-sent';
+  } catch (err) {
+    state.authError = err.message || 'Something went wrong.';
+  } finally {
+    state.authBusy = false;
+    render();
+  }
+}
+
 async function signOut(){
   await supabaseClient.auth.signOut();
 }
@@ -867,6 +908,16 @@ function renderAuth(){
     document.getElementById('backToSignIn').addEventListener('click', () => { state.authMode='signin'; render(); });
     return;
   }
+  if (state.authMode === 'reset-sent') {
+    app.innerHTML = `
+      <div class="auth-box card">
+        <h1 style="font-size:22px; margin-bottom:6px;">Check your email</h1>
+        <p class="muted" style="font-size:14px;">We sent a password reset link. Click it, then come back and sign in with your new password.</p>
+        <button class="primary" style="margin-top:10px;" id="backToSignIn">Back to sign in</button>
+      </div>`;
+    document.getElementById('backToSignIn').addEventListener('click', () => { state.authMode='signin'; render(); });
+    return;
+  }
   app.innerHTML = `
     <div class="auth-box card">
       <h1 style="font-size:22px; margin-bottom:4px;">Health Tracker</h1>
@@ -883,9 +934,12 @@ function renderAuth(){
           ${state.authBusy ? 'Working…' : (state.authMode === 'signup' ? 'Sign up' : 'Sign in')}
         </button>
       </form>
+      ${state.authMode === 'signin' ? `<p style="font-size:13px; margin-top:10px; text-align:right;"><span class="link" id="forgotPasswordLink">Forgot password?</span></p>` : ''}
       <p style="font-size:13px; margin-top:14px;" id="authSwitchLine"></p>
     </div>`;
   document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
+  const forgotLink = document.getElementById('forgotPasswordLink');
+  if (forgotLink) forgotLink.addEventListener('click', handleForgotPassword);
   const switchLine = document.getElementById('authSwitchLine');
   if (state.authMode === 'signup') {
     switchLine.innerHTML = `Already have an account? <span class="link" id="switchToSignin">Sign in</span>`;
@@ -1096,7 +1150,7 @@ function renderDashboard(){
           ` : `
           <div>
             <div style="font-size:14px;">${escapeHtml(m.name)}</div>
-            <div class="muted" style="font-size:11px;">${m.sodium||0}mg sodium · ${m.sugar||0}g sugar</div>
+            <div class="muted" style="font-size:11px;">${formatTime(m.created_at) ? `${formatTime(m.created_at)} · ` : ''}${m.sodium||0}mg sodium · ${m.sugar||0}g sugar</div>
           </div>
           <div class="row">
             <span class="mono muted" style="font-size:13px;">${m.calories} cal · ${m.protein}p / ${m.carbs}c / ${m.fat}f</span>
@@ -1220,10 +1274,14 @@ function renderDashboard(){
     waterRow.appendChild(btn);
   });
 
-  document.getElementById('customWaterBtn').addEventListener('click', () => {
+  const submitCustomWater = () => {
     const input = document.getElementById('customWaterInput');
     const v = parseFloat(input.value);
     if (!isNaN(v) && v > 0) { addWater(v); input.value = ''; }
+  };
+  document.getElementById('customWaterBtn').addEventListener('click', submitCustomWater);
+  document.getElementById('customWaterInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitCustomWater(); }
   });
   const undoLink = document.getElementById('undoWaterLink');
   if (undoLink) undoLink.addEventListener('click', undoWaterAdd);
@@ -1235,7 +1293,14 @@ function renderDashboard(){
   const photoInput = document.getElementById('photoInput');
   if (photoInput) photoInput.addEventListener('change', handlePhotoSelect);
   const mealTextEl = document.getElementById('mealText');
-  if (mealTextEl) mealTextEl.addEventListener('input', (e) => { state.mealTextValue = e.target.value; });
+  if (mealTextEl) {
+    mealTextEl.addEventListener('input', (e) => { state.mealTextValue = e.target.value; });
+    // Shift+Enter still inserts a newline; plain Enter submits — one-handed
+    // logging shouldn't require reaching for the Estimate button.
+    mealTextEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runEstimate(); }
+    });
+  }
   const photoNoteEl = document.getElementById('photoNoteInput');
   if (photoNoteEl) photoNoteEl.addEventListener('input', (e) => {
     state.photoNote = e.target.value;
@@ -1345,21 +1410,16 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('focus', checkMidnightRollover);
 
+// onAuthStateChange fires once immediately with the current session (event
+// INITIAL_SESSION) as soon as it's subscribed, so it alone owns boot — a
+// separate getSession().then() here would just be a second, redundant initial
+// load racing this one.
 supabaseClient.auth.onAuthStateChange((event, session) => {
   const hadSession = !!state.session;
   state.session = session;
   if (session && !hadSession) {
     refreshAll();
   } else if (!session) {
-    render();
-  }
-});
-
-supabaseClient.auth.getSession().then(({ data }) => {
-  state.session = data.session;
-  if (state.session) {
-    refreshAll();
-  } else {
     render();
   }
 });
