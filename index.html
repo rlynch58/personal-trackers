@@ -247,13 +247,18 @@ async function refreshAll(){
 }
 
 // ---------- Mutations ----------
-// date/baseRow are captured explicitly by the caller at the moment the save is
-// requested, not read from global state here — state.selectedDate/state.dayRow
-// may have moved on to a different day by the time this actually runs.
-async function saveDayField(date, baseRow, patch){
+// date is captured explicitly by the caller at the moment the save is
+// requested, not read from global state here — state.selectedDate may have
+// moved on to a different day by the time this actually runs.
+//
+// The upsert payload deliberately includes ONLY {user_id, log_date, ...patch} —
+// not a full row. With onConflict, Postgres's ON CONFLICT DO UPDATE only
+// touches the columns present in the payload, so a water-only save can never
+// stomp a weight value that changed more recently (and vice versa). Passing a
+// full snapshotted row here would reintroduce that clobber.
+async function saveDayField(date, patch){
   const userId = state.session.user.id;
-  const current = baseRow || {};
-  const next = { user_id: userId, log_date: date, weight: current.weight ?? null, water: current.water ?? 0, ...patch };
+  const next = { user_id: userId, log_date: date, ...patch };
   const { data, error } = await supabaseClient
     .from('health_logs')
     .upsert(next, { onConflict: 'user_id,log_date' })
@@ -276,8 +281,7 @@ function commitWeightFromInput(){
   const el = document.getElementById('weightInput');
   const n = parseFloat(el.value);
   const date = state.selectedDate;
-  const baseRow = state.dayRow;
-  saveDayField(date, baseRow, { weight: isNaN(n) ? null : round(n) }).then((ok) => {
+  saveDayField(date, { weight: isNaN(n) ? null : round(n) }).then((ok) => {
     if (!ok) return; // save failed — saveDayField already surfaced state.loadError
     state.weightJustSaved = true;
     render();
@@ -287,9 +291,9 @@ function commitWeightFromInput(){
 
 let waterSaveQueue = Promise.resolve();
 
-function queueWaterSave(date, baseRow, water){
+function queueWaterSave(date, water){
   waterSaveQueue = waterSaveQueue
-    .then(() => saveDayField(date, baseRow, { water }))
+    .then(() => saveDayField(date, { water }))
     .catch((err) => {
       // A rejected link must never be left dangling on waterSaveQueue — that would
       // permanently skip every save chained on afterward. Surface it and move on.
@@ -302,30 +306,28 @@ function queueWaterSave(date, baseRow, water){
 
 function addWater(amount){
   const date = state.selectedDate;
-  const baseRow = state.dayRow;
-  const current = (baseRow && baseRow.water) || 0;
+  const current = (state.dayRow && state.dayRow.water) || 0;
   const optimisticWater = round(current + amount);
-  state.dayRow = { ...(baseRow || {}), water: optimisticWater };
+  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
   state.lastWaterUndo = { amount };
   render();
   clearTimeout(window.__waterUndoTimer);
   window.__waterUndoTimer = setTimeout(() => { state.lastWaterUndo = null; render(); }, 10000);
 
-  return queueWaterSave(date, baseRow, optimisticWater);
+  return queueWaterSave(date, optimisticWater);
 }
 
 function undoWaterAdd(){
   if (!state.lastWaterUndo) return;
   const amount = state.lastWaterUndo.amount;
   const date = state.selectedDate;
-  const baseRow = state.dayRow;
-  const current = (baseRow && baseRow.water) || 0;
+  const current = (state.dayRow && state.dayRow.water) || 0;
   const optimisticWater = round(Math.max(0, current - amount));
-  state.dayRow = { ...(baseRow || {}), water: optimisticWater };
+  state.dayRow = { ...(state.dayRow || {}), water: optimisticWater };
   state.lastWaterUndo = null;
   clearTimeout(window.__waterUndoTimer);
   render();
-  return queueWaterSave(date, baseRow, optimisticWater);
+  return queueWaterSave(date, optimisticWater);
 }
 
 // Deletes commit immediately (rather than waiting out the undo window before
@@ -341,25 +343,34 @@ function deleteMeal(id){
 
   const existing = pendingUndoMeals.get(id);
   if (existing) clearTimeout(existing.timer);
+
+  // Tracked so undoDeleteMeal can await the delete actually landing before it
+  // races an insert against it — Undo tapped on a fast connection could otherwise
+  // hit a duplicate-key error, or double-push the meal if this handler's own
+  // error-restore path fires around the same time.
+  const deletePromise = supabaseClient.from('meals').delete().eq('id', id)
+    .then(({ error }) => { if (error) throw error; });
+
   const timer = setTimeout(() => { pendingUndoMeals.delete(id); }, MEAL_DELETE_UNDO_MS);
-  pendingUndoMeals.set(id, { meal, timer });
+  pendingUndoMeals.set(id, { meal, timer, deletePromise });
 
   showToast('Meal removed', () => undoDeleteMeal(id));
 
-  supabaseClient.from('meals').delete().eq('id', id).then(({ error }) => {
-    if (error) {
-      const entry = pendingUndoMeals.get(id);
-      if (entry) { clearTimeout(entry.timer); pendingUndoMeals.delete(id); }
-      // Delete failed server-side but we already removed it from the UI — put it back.
-      if (meal.log_date === state.selectedDate) {
-        state.meals.push(meal);
-        state.meals.sort((a,b)=> (a.created_at||'') < (b.created_at||'') ? -1 : 1);
-      }
-      state.loadError = 'Delete failed: ' + error.message;
-      render();
-      return;
-    }
+  deletePromise.then(() => {
     loadHistory().then(render);
+  }).catch((error) => {
+    // If Undo already claimed this entry, it owns the recovery (see its own catch) — skip.
+    const entry = pendingUndoMeals.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    pendingUndoMeals.delete(id);
+    // Delete failed server-side but we already removed it from the UI — put it back.
+    if (meal.log_date === state.selectedDate) {
+      state.meals.push(meal);
+      state.meals.sort((a,b)=> (a.created_at||'') < (b.created_at||'') ? -1 : 1);
+    }
+    state.loadError = 'Delete failed: ' + error.message;
+    render();
   });
 }
 
@@ -368,6 +379,20 @@ async function undoDeleteMeal(id){
   if (!entry) return; // undo window already expired — nothing cached to restore
   clearTimeout(entry.timer);
   pendingUndoMeals.delete(id);
+
+  try {
+    await entry.deletePromise; // wait for the original delete to actually complete first
+  } catch (error) {
+    // The delete never succeeded, so the row is still in the DB — re-inserting it
+    // would hit a duplicate-key error. Just restore the optimistic UI removal.
+    if (entry.meal.log_date === state.selectedDate) {
+      state.meals.push(entry.meal);
+      state.meals.sort((a,b)=> (a.created_at||'') < (b.created_at||'') ? -1 : 1);
+    }
+    render();
+    return;
+  }
+
   const { data, error } = await supabaseClient.from('meals').insert(entry.meal).select().single();
   if (error) { state.loadError = 'Could not undo delete: ' + error.message; render(); return; }
   if (entry.meal.log_date === state.selectedDate) {
