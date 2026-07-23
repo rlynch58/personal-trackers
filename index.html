@@ -78,7 +78,13 @@
 // ---------- Config ----------
 const SUPA_URL = 'https://gdnnscbhlrjrtpjneaia.supabase.co';
 const SUPA_ANON_KEY = 'sb_publishable_wJyaNkHPvTQlxERzaVEdEg_5tQtcWf6';
-const GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
+// Fallback defaults — used until a user's row loads from user_settings (or for
+// any key they haven't customized yet). Editable per-user via the Settings card.
+const DEFAULT_GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, sugar: 40 };
+// Values sourced from premierprotein.com's Caramel shake label; sources disagreed
+// slightly on carbs/sodium (2-4g / 320-350mg) across scrapes, so double-check
+// against your physical carton and adjust in Settings if needed.
+const DEFAULT_PROTEIN_PRESET = { name: 'Premier Protein (Caramel)', calories: 160, protein: 30, carbs: 4, fat: 3, sodium: 320, sugar: 1 };
 const APP_VERSION = '1.4';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
@@ -116,6 +122,12 @@ const state = {
   recentMealsOpen: false,
   recentMealsLoading: false,
   editingMealId: null,
+  goals: { ...DEFAULT_GOALS },
+  proteinPreset: { ...DEFAULT_PROTEIN_PRESET },
+  settingsOpen: false,
+  settingsSaving: false,
+  settingsSaved: false,
+  settingsError: null,
 };
 
 let macroChartInstance = null;
@@ -230,11 +242,30 @@ async function loadHistory(){
   state.history = Object.values(byDate).sort((a,b)=> a.date < b.date ? 1 : -1);
 }
 
+async function loadUserSettings(){
+  const userId = state.session.user.id;
+  const { data, error } = await supabaseClient.from('user_settings').select('settings').eq('user_id', userId).maybeSingle();
+  if (error) throw error;
+  const saved = (data && data.settings) || {};
+  state.goals = { ...DEFAULT_GOALS, ...(saved.goals || {}) };
+  state.proteinPreset = { ...DEFAULT_PROTEIN_PRESET, ...(saved.proteinPreset || {}) };
+}
+
+async function saveUserSettings(next){
+  const userId = state.session.user.id;
+  const { error } = await supabaseClient.from('user_settings').upsert({
+    user_id: userId,
+    settings: { goals: next.goals, proteinPreset: next.proteinPreset },
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id' });
+  if (error) throw error;
+}
+
 async function refreshAll(){
   const date = state.selectedDate;
   const token = ++loadToken;
   try {
-    const [dayData] = await Promise.all([loadDayForDate(date), loadHistory()]);
+    const [dayData] = await Promise.all([loadDayForDate(date), loadHistory(), loadUserSettings()]);
     if (token !== loadToken) return; // a newer load has since started — discard this one
     state.dayRow = dayData.dayRow;
     state.meals = dayData.meals;
@@ -497,6 +528,66 @@ async function logRecentMeal(id){
   showToast(`Logged ${m.name}`);
 }
 
+// Same one-tap-log pattern as logRecentMeal, but always visible (sourced from
+// state.proteinPreset, which is user-editable in Settings) rather than gated
+// behind meal history.
+async function logProteinPreset(){
+  const p = state.proteinPreset;
+  const userId = state.session.user.id;
+  const token = loadToken;
+  const { data, error } = await supabaseClient.from('meals').insert({
+    user_id: userId, log_date: state.selectedDate,
+    name: p.name, calories: Math.round(p.calories), protein: Math.round(p.protein),
+    carbs: Math.round(p.carbs), fat: Math.round(p.fat),
+    sodium: Math.round(p.sodium || 0), sugar: Math.round(p.sugar || 0),
+  }).select().single();
+  if (error) { state.loadError = 'Could not log meal: ' + error.message; render(); return; }
+  if (token === loadToken) state.meals.push(data);
+  await loadHistory();
+  render();
+  showToast(`Logged ${p.name}`);
+}
+
+function toggleSettings(){
+  state.settingsOpen = !state.settingsOpen;
+  state.settingsError = null;
+  render();
+}
+
+function saveSettingsFromInputs(){
+  const val = (id) => document.getElementById(id).value;
+  const num = (id, fallback) => { const n = parseFloat(val(id)); return isNaN(n) ? fallback : n; };
+  const nextGoals = {
+    calories: num('settingsCalories', state.goals.calories),
+    protein: num('settingsProtein', state.goals.protein),
+    water: num('settingsWater', state.goals.water),
+    sodium: num('settingsSodium', state.goals.sodium),
+    sugar: num('settingsSugar', state.goals.sugar),
+  };
+  const nextPreset = {
+    name: (val('settingsPresetName') || '').trim() || DEFAULT_PROTEIN_PRESET.name,
+    calories: num('settingsPresetCalories', state.proteinPreset.calories),
+    protein: num('settingsPresetProtein', state.proteinPreset.protein),
+    carbs: num('settingsPresetCarbs', state.proteinPreset.carbs),
+    fat: num('settingsPresetFat', state.proteinPreset.fat),
+    sodium: num('settingsPresetSodium', state.proteinPreset.sodium),
+    sugar: num('settingsPresetSugar', state.proteinPreset.sugar),
+  };
+  state.settingsSaving = true; state.settingsError = null; render();
+  saveUserSettings({ goals: nextGoals, proteinPreset: nextPreset }).then(() => {
+    state.goals = nextGoals;
+    state.proteinPreset = nextPreset;
+    state.settingsSaving = false;
+    state.settingsSaved = true;
+    render();
+    setTimeout(() => { state.settingsSaved = false; render(); }, 1800);
+  }).catch((err) => {
+    state.settingsSaving = false;
+    state.settingsError = 'Could not save settings: ' + (err && err.message ? err.message : 'Something went wrong.');
+    render();
+  });
+}
+
 function startEditMeal(id){
   state.movingMealId = null;
   state.editingMealId = id;
@@ -647,17 +738,22 @@ async function signOut(){
 }
 
 // ---------- Rendering ----------
-function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption){
-  const circumference = 2 * Math.PI * 39.5;
+// size is configurable so the protein ring can be rendered as the visual hero
+// (larger) while calories/water stay secondary — see the ring row in renderDashboard.
+function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88){
+  const r = size/2 - 4.5;
+  const c = size/2;
+  const circumference = 2 * Math.PI * r;
   const offset = circumference * (1 - clampPct(pct)/100);
+  const fontSize = Math.round(size * 0.17);
   return `
     <div class="ring-wrap">
-      <svg width="88" height="88" viewBox="0 0 88 88">
-        <circle cx="44" cy="44" r="39.5" fill="none" stroke="${track}" stroke-width="9"></circle>
-        <circle cx="44" cy="44" r="39.5" fill="none" stroke="${color}" stroke-width="9"
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+        <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${track}" stroke-width="9"></circle>
+        <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="9"
           stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round"
-          transform="rotate(-90 44 44)"></circle>
-        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="mono" style="font-size:15px; font-weight:600; fill:${textColor || 'var(--ink)'};">${round(value)}${unit}</text>
+          transform="rotate(-90 ${c} ${c})"></circle>
+        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="mono" style="font-size:${fontSize}px; font-weight:600; fill:${textColor || 'var(--ink)'};">${round(value)}${unit}</text>
       </svg>
       ${hideCaption ? '' : `<div class="muted" style="font-size:12px; margin-top:2px;">${label} <span style="opacity:.7">/ ${goal}${unit}</span></div>`}
     </div>`;
@@ -668,7 +764,7 @@ function dayBadge(d, size=40){
     <circle cx="20" cy="20" r="17.5" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="3 3"></circle>
     <path d="M14 24 Q20 14 26 24" stroke="var(--ink-muted)" stroke-width="1.3" fill="none" stroke-linecap="round" opacity="0.5"></path>
   </svg>`;
-  if (d.calories > GOALS.calories) {
+  if (d.calories > state.goals.calories) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 40 40">
       <circle cx="20" cy="20" r="17.5" fill="var(--coral)"></circle>
       <rect x="18.5" y="11" width="3" height="13" rx="1.5" fill="var(--action-text)"></rect>
@@ -689,7 +785,7 @@ function dayBadge(d, size=40){
 
 function dayHitGoals(d){
   if (!d) return false;
-  return d.calories > 0 && d.calories <= GOALS.calories && d.protein >= GOALS.protein && (d.water||0) >= GOALS.water;
+  return d.calories > 0 && d.calories <= state.goals.calories && d.protein >= state.goals.protein && (d.water||0) >= state.goals.water;
 }
 
 function renderAuth(){
@@ -739,7 +835,7 @@ function renderDashboard(){
   const totals = totalsOf(visibleMeals);
   const water = (state.dayRow && state.dayRow.water) || 0;
   const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
-  const calOver = totals.calories > GOALS.calories;
+  const calOver = totals.calories > state.goals.calories;
   const sortedHistory = [...state.history];
   const weightSeries = [...state.history].filter(d => d.weight != null).sort((a,b)=> a.date < b.date ? -1 : 1);
   const last7 = sortedHistory.slice(0,7);
@@ -753,15 +849,46 @@ function renderDashboard(){
     <div class="between" style="margin-bottom:6px;">
       <div>
         <h1 style="font-family:'Space Grotesk',sans-serif; font-size:1.4rem; font-weight:800; letter-spacing:-.03em; margin:0; color:var(--accent);">Health<span style="color:var(--ink);">.</span><span class="ver">v${APP_VERSION}</span></h1>
-        <div class="muted" style="font-size:13px; margin-top:2px;">${GOALS.calories} cal cap · ${GOALS.protein}g protein · ${GOALS.water}oz water</div>
+        <div class="muted" style="font-size:13px; margin-top:2px;">${state.goals.protein}g protein goal · ${state.goals.calories} cal cap · ${state.goals.water}oz water</div>
       </div>
       <div class="row" style="gap:8px;">
+        <button id="settingsBtn" title="Settings" style="width:36px; height:36px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--ink-muted); font-size:1rem; display:flex; align-items:center; justify-content:center; padding:0;">⚙</button>
         <button id="refreshBtn" title="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--lime); color:var(--action-text); font-size:1rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
         <button id="signOutBtn" style="border:none; background:var(--lime); color:var(--action-text); padding:8px 14px; border-radius:10px; font-weight:600;">Sign out</button>
       </div>
     </div>
 
     ${state.loadError ? `<div class="err">${escapeHtml(state.loadError)}</div>` : ''}
+
+    ${state.settingsOpen ? `
+    <div class="card">
+      <div class="between" style="margin-bottom:12px;">
+        <h2 style="margin:0;">Settings</h2>
+        ${state.settingsSaved ? `<span style="color:var(--sage); font-size:13px; font-weight:600;">✓ Saved</span>` : ''}
+      </div>
+      ${state.settingsError ? `<div class="err">${escapeHtml(state.settingsError)}</div>` : ''}
+      <div class="muted" style="font-size:12px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">DAILY GOALS</div>
+      <div class="row" style="margin-bottom:16px;">
+        <div class="num-field"><label>Calories cap</label><input type="number" inputmode="decimal" id="settingsCalories" value="${state.goals.calories}"></div>
+        <div class="num-field"><label>Protein (g)</label><input type="number" inputmode="decimal" id="settingsProtein" value="${state.goals.protein}"></div>
+        <div class="num-field"><label>Water (oz)</label><input type="number" inputmode="decimal" id="settingsWater" value="${state.goals.water}"></div>
+        <div class="num-field"><label>Sodium (mg)</label><input type="number" inputmode="decimal" id="settingsSodium" value="${state.goals.sodium}"></div>
+        <div class="num-field"><label>Sugar (g)</label><input type="number" inputmode="decimal" id="settingsSugar" value="${state.goals.sugar}"></div>
+      </div>
+      <div class="muted" style="font-size:12px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">QUICK-ADD PRESET</div>
+      <input id="settingsPresetName" value="${escapeHtml(state.proteinPreset.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
+      <div class="row" style="margin-bottom:10px;">
+        <div class="num-field"><label>Calories</label><input type="number" inputmode="decimal" id="settingsPresetCalories" value="${state.proteinPreset.calories}"></div>
+        <div class="num-field"><label>Protein (g)</label><input type="number" inputmode="decimal" id="settingsPresetProtein" value="${state.proteinPreset.protein}"></div>
+        <div class="num-field"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="settingsPresetCarbs" value="${state.proteinPreset.carbs}"></div>
+        <div class="num-field"><label>Fat (g)</label><input type="number" inputmode="decimal" id="settingsPresetFat" value="${state.proteinPreset.fat}"></div>
+      </div>
+      <div class="row" style="margin-bottom:16px;">
+        <div class="num-field"><label>Sodium (mg)</label><input type="number" inputmode="decimal" id="settingsPresetSodium" value="${state.proteinPreset.sodium}"></div>
+        <div class="num-field"><label>Sugar (g)</label><input type="number" inputmode="decimal" id="settingsPresetSugar" value="${state.proteinPreset.sugar}"></div>
+      </div>
+      <button class="primary" id="saveSettingsBtn" ${state.settingsSaving ? 'disabled' : ''}>${state.settingsSaving ? 'Saving…' : 'Save settings'}</button>
+    </div>` : ''}
 
     <div class="card">
       <div class="between" style="margin-bottom:16px;">
@@ -777,29 +904,31 @@ function renderDashboard(){
       <div class="row" style="background:var(--bg); border-radius:12px; padding:12px 16px; margin-bottom:16px; justify-content:space-between;">
         <label for="weightInput" style="font-weight:600; font-size:14px;">Morning weight</label>
         <div class="row" style="gap:6px;">
-          <input id="weightInput" type="number" step="0.1" placeholder="0.0" value="${weight}" style="width:100px; font-size:18px; padding:8px 10px;" class="mono">
+          <input id="weightInput" type="number" inputmode="decimal" step="0.1" placeholder="0.0" value="${weight}" style="width:100px; font-size:18px; padding:8px 10px;" class="mono">
           <span class="muted" style="font-size:14px;">lbs</span>
           <button class="primary" id="saveWeightBtn" style="padding:8px 14px; font-size:14px;">Save</button>
           ${state.weightJustSaved ? `<span style="color:var(--sage); font-size:13px; font-weight:600;">✓ Saved</span>` : ''}
         </div>
       </div>
 
-      <div class="row" style="justify-content:space-around; margin-bottom:8px;">
-        ${calOver ? `
-          <div style="background:rgba(255,133,133,.12); border-radius:12px; padding:8px 6px; text-align:center;">
-            <div style="font-size:11px; color:var(--coral); font-weight:700; margin-bottom:4px; letter-spacing:.04em;">OVER CAP</div>
-            ${ring((totals.calories/GOALS.calories)*100, 'var(--coral)', 'rgba(234,247,246,.14)', totals.calories, '', '', GOALS.calories, 'var(--coral)', true)}
-            <div style="font-size:11px; color:var(--coral); font-weight:600; margin-top:2px;">${round(totals.calories-GOALS.calories)} over ${GOALS.calories}</div>
-          </div>`
-          : ring((totals.calories/GOALS.calories)*100, 'var(--accent)', 'rgba(234,247,246,.14)', totals.calories, '', 'Calories', GOALS.calories)}
-        ${ring((totals.protein/GOALS.protein)*100, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', GOALS.protein)}
-        ${ring((water/GOALS.water)*100, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', 'Water', GOALS.water)}
+      <div class="row" style="justify-content:center; align-items:center; gap:22px; margin-bottom:8px;">
+        ${ring((totals.protein/state.goals.protein)*100, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', state.goals.protein, null, false, 128)}
+        <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+          ${calOver ? `
+            <div style="background:rgba(255,133,133,.12); border-radius:10px; padding:5px 4px; text-align:center;">
+              <div style="font-size:9px; color:var(--coral); font-weight:700; margin-bottom:2px; letter-spacing:.04em;">OVER CAP</div>
+              ${ring((totals.calories/state.goals.calories)*100, 'var(--coral)', 'rgba(234,247,246,.14)', totals.calories, '', '', state.goals.calories, 'var(--coral)', true, 64)}
+              <div style="font-size:9px; color:var(--coral); font-weight:600; margin-top:2px;">${round(totals.calories-state.goals.calories)} over</div>
+            </div>`
+            : ring((totals.calories/state.goals.calories)*100, 'var(--accent)', 'rgba(234,247,246,.14)', totals.calories, '', 'Calories', state.goals.calories, null, false, 64)}
+          ${ring((water/state.goals.water)*100, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', 'Water', state.goals.water, null, false, 64)}
+        </div>
       </div>
 
       <div class="row center" style="margin-top:4px;" id="waterBtnRow"></div>
 
       <div class="row center" style="margin-top:10px; gap:8px;">
-        <input id="customWaterInput" type="number" placeholder="Custom" style="width:90px;" class="mono">
+        <input id="customWaterInput" type="number" inputmode="decimal" placeholder="Custom" style="width:90px;" class="mono">
         <span class="muted" style="font-size:13px;">oz</span>
         <button id="customWaterBtn" style="padding:7px 14px; font-size:13px;">Add</button>
       </div>
@@ -813,8 +942,11 @@ function renderDashboard(){
 
     <div class="card">
       <h2>Log a meal</h2>
-      <div style="margin-bottom:10px;">
+      <div class="row" style="margin-bottom:10px; justify-content:space-between;">
         <span class="link" id="recentMealsToggle" style="font-size:13px; font-weight:600;">Recent meals ${state.recentMealsOpen ? '⌄' : '›'}</span>
+        <button id="proteinPresetBtn" class="pill" style="font-size:12px; font-weight:600; border-color:var(--lime); color:var(--lime);">+ ${escapeHtml(state.proteinPreset.name)}</button>
+      </div>
+      <div style="margin-bottom:10px;">
         ${state.recentMealsOpen ? `
           <div style="margin-top:8px;">
             ${state.recentMealsLoading
@@ -854,14 +986,14 @@ function renderDashboard(){
           <div class="muted" style="font-size:12px; margin-bottom:8px;">Check these before adding — estimates are approximate</div>
           <input id="pmName" value="${escapeHtml(state.pendingMeal.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
           <div class="row" style="margin-bottom:12px;">
-            <div class="num-field"><label>Calories</label><input type="number" id="pmCalories" value="${state.pendingMeal.calories}"></div>
-            <div class="num-field"><label>Protein (g)</label><input type="number" id="pmProtein" value="${state.pendingMeal.protein}"></div>
-            <div class="num-field"><label>Carbs (g)</label><input type="number" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
-            <div class="num-field"><label>Fat (g)</label><input type="number" id="pmFat" value="${state.pendingMeal.fat}"></div>
+            <div class="num-field"><label>Calories</label><input type="number" inputmode="decimal" id="pmCalories" value="${state.pendingMeal.calories}"></div>
+            <div class="num-field"><label>Protein (g)</label><input type="number" inputmode="decimal" id="pmProtein" value="${state.pendingMeal.protein}"></div>
+            <div class="num-field"><label>Carbs (g)</label><input type="number" inputmode="decimal" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
+            <div class="num-field"><label>Fat (g)</label><input type="number" inputmode="decimal" id="pmFat" value="${state.pendingMeal.fat}"></div>
           </div>
           <div class="row" style="margin-bottom:12px;">
-            <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" id="pmSodium" value="${state.pendingMeal.sodium||0}"></div>
-            <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" id="pmSugar" value="${state.pendingMeal.sugar||0}"></div>
+            <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" inputmode="decimal" id="pmSodium" value="${state.pendingMeal.sodium||0}"></div>
+            <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" inputmode="decimal" id="pmSugar" value="${state.pendingMeal.sugar||0}"></div>
           </div>
           <div class="row">
             <button class="primary" id="confirmMealBtn">+ Add to today's log</button>
@@ -875,14 +1007,14 @@ function renderDashboard(){
             <div class="muted" style="font-size:11px; margin-bottom:8px;">Editing meal</div>
             <input class="edit-name" data-id="${m.id}" value="${escapeHtml(m.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
             <div class="row" style="margin-bottom:10px;">
-              <div class="num-field"><label>Calories</label><input type="number" class="edit-calories" data-id="${m.id}" value="${m.calories}"></div>
-              <div class="num-field"><label>Protein (g)</label><input type="number" class="edit-protein" data-id="${m.id}" value="${m.protein}"></div>
-              <div class="num-field"><label>Carbs (g)</label><input type="number" class="edit-carbs" data-id="${m.id}" value="${m.carbs}"></div>
-              <div class="num-field"><label>Fat (g)</label><input type="number" class="edit-fat" data-id="${m.id}" value="${m.fat}"></div>
+              <div class="num-field"><label>Calories</label><input type="number" inputmode="decimal" class="edit-calories" data-id="${m.id}" value="${m.calories}"></div>
+              <div class="num-field"><label>Protein (g)</label><input type="number" inputmode="decimal" class="edit-protein" data-id="${m.id}" value="${m.protein}"></div>
+              <div class="num-field"><label>Carbs (g)</label><input type="number" inputmode="decimal" class="edit-carbs" data-id="${m.id}" value="${m.carbs}"></div>
+              <div class="num-field"><label>Fat (g)</label><input type="number" inputmode="decimal" class="edit-fat" data-id="${m.id}" value="${m.fat}"></div>
             </div>
             <div class="row" style="margin-bottom:10px;">
-              <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" class="edit-sodium" data-id="${m.id}" value="${m.sodium||0}"></div>
-              <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" class="edit-sugar" data-id="${m.id}" value="${m.sugar||0}"></div>
+              <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" inputmode="decimal" class="edit-sodium" data-id="${m.id}" value="${m.sodium||0}"></div>
+              <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" inputmode="decimal" class="edit-sugar" data-id="${m.id}" value="${m.sugar||0}"></div>
             </div>
             <div class="row">
               <button class="primary save-edit-btn" data-id="${m.id}">Save changes</button>
@@ -920,8 +1052,8 @@ function renderDashboard(){
               </div></div>`
           : `<div class="muted" style="font-size:13px;">Log a meal to see your breakdown.</div>`}
         ${(totals.sodium>0 || totals.sugar>0) ? `<div class="muted" style="font-size:12px; margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;">
-            Today so far: <span class="mono" style="color:${totals.sodium > GOALS.sodium ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sodium)}mg</span> sodium <span style="opacity:0.6;">/ ${GOALS.sodium}mg</span>
-            · <span class="mono" style="color:${totals.sugar > GOALS.sugar ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sugar)}g</span> sugar <span style="opacity:0.6;">/ ${GOALS.sugar}g</span>
+            Today so far: <span class="mono" style="color:${totals.sodium > state.goals.sodium ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sodium)}mg</span> sodium <span style="opacity:0.6;">/ ${state.goals.sodium}mg</span>
+            · <span class="mono" style="color:${totals.sugar > state.goals.sugar ? 'var(--coral)' : 'var(--ink)'}">${round(totals.sugar)}g</span> sugar <span style="opacity:0.6;">/ ${state.goals.sugar}g</span>
             <span style="opacity:0.7;"> (ballpark)</span>
           </div>` : ''}
       </div>
@@ -929,7 +1061,7 @@ function renderDashboard(){
         <h2>7-day average</h2>
         ${rolling7 ? `
           <div class="muted" style="font-size:13px; margin-bottom:4px;">Based on ${rolling7.n} logged day${rolling7.n>1?'s':''}</div>
-          <div class="mono" style="font-size:22px; font-weight:600; color:${rolling7.calories > GOALS.calories ? 'var(--coral)' : 'var(--turquoise)'};">${rolling7.calories} cal</div>
+          <div class="mono" style="font-size:22px; font-weight:600; color:${rolling7.calories > state.goals.calories ? 'var(--coral)' : 'var(--turquoise)'};">${rolling7.calories} cal</div>
           <div class="mono" style="font-size:22px; font-weight:600; color:var(--gold);">${rolling7.protein}g protein</div>
         ` : `<div class="muted" style="font-size:13px;">No days logged yet.</div>`}
       </div>
@@ -956,15 +1088,15 @@ function renderDashboard(){
                   <div class="muted" style="font-size:11px;">weight</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > GOALS.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > state.goals.calories ? 'var(--coral)' : 'var(--ink)'}">${round(d.calories)}</div>
                   <div class="muted" style="font-size:11px;">cal</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.protein >= GOALS.protein ? 'var(--sage)' : 'var(--ink)'}">${round(d.protein)}g</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.protein >= state.goals.protein ? 'var(--sage)' : 'var(--ink)'}">${round(d.protein)}g</div>
                   <div class="muted" style="font-size:11px;">protein</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${(d.water||0) >= GOALS.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${(d.water||0) >= state.goals.water ? 'var(--sage)' : 'var(--ink)'}">${d.water||0}oz</div>
                   <div class="muted" style="font-size:11px;">water</div>
                 </div>
               </div>
@@ -975,6 +1107,10 @@ function renderDashboard(){
 
   // ---- wire up events ----
   document.getElementById('signOutBtn').addEventListener('click', signOut);
+  document.getElementById('settingsBtn').addEventListener('click', toggleSettings);
+  const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+  if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsFromInputs);
+  document.getElementById('proteinPresetBtn').addEventListener('click', logProteinPreset);
   document.getElementById('refreshBtn').addEventListener('click', () => {
     state.mealTextValue = '';
     state.photo = null;
