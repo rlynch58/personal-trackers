@@ -85,6 +85,12 @@ const DEFAULT_GOALS = { calories: 1800, protein: 150, water: 80, sodium: 1800, s
 // slightly on carbs/sodium (2-4g / 320-350mg) across scrapes, so double-check
 // against your physical carton and adjust in Settings if needed.
 const DEFAULT_PROTEIN_PRESET = { name: 'Premier Protein (Caramel)', calories: 160, protein: 30, carbs: 4, fat: 3, sodium: 320, sugar: 1 };
+const WEIGHT_RANGE_OPTIONS = [
+  { key: '7', label: '7D', days: 7, phrase: 'the last 7 days' },
+  { key: '30', label: '30D', days: 30, phrase: 'the last 30 days' },
+  { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
+  { key: 'all', label: 'All', days: null, phrase: 'your history' },
+];
 const APP_VERSION = '1.4';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
@@ -124,6 +130,9 @@ const state = {
   editingMealId: null,
   goals: { ...DEFAULT_GOALS },
   proteinPreset: { ...DEFAULT_PROTEIN_PRESET },
+  weightRange: '30',
+  weightSeries: [],
+  weightSeriesLoading: false,
   settingsOpen: false,
   settingsSaving: false,
   settingsSaved: false,
@@ -134,6 +143,7 @@ let macroChartInstance = null;
 let weightChartInstance = null;
 const pendingUndoMeals = new Map(); // id -> { meal, timer } for meals deleted but still within the undo window
 let loadToken = 0; // bumped on every day-load request; stale responses are discarded
+let weightSeriesToken = 0; // bumped on every weight-range fetch; stale responses are discarded
 
 // ---------- Helpers ----------
 function pad(n){ return String(n).padStart(2,'0'); }
@@ -242,6 +252,24 @@ async function loadHistory(){
   state.history = Object.values(byDate).sort((a,b)=> a.date < b.date ? 1 : -1);
 }
 
+// Decoupled from loadHistory's 45-day window so the Weight trend chart's 90-day/All
+// ranges aren't silently truncated. Only fetches log_date/weight, and only as far
+// back as the selected range actually needs — no unbounded query on initial load.
+async function loadWeightSeries(rangeKey){
+  const userId = state.session.user.id;
+  const opt = WEIGHT_RANGE_OPTIONS.find(o => o.key === rangeKey) || WEIGHT_RANGE_OPTIONS[1];
+  let query = supabaseClient.from('health_logs').select('log_date, weight')
+    .eq('user_id', userId).not('weight', 'is', null).order('log_date', { ascending: true });
+  if (opt.days != null) {
+    const since = new Date();
+    since.setDate(since.getDate() - opt.days);
+    query = query.gte('log_date', dateKey(since));
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(r => ({ date: r.log_date, weight: r.weight }));
+}
+
 async function loadUserSettings(){
   const userId = state.session.user.id;
   const { data, error } = await supabaseClient.from('user_settings').select('settings').eq('user_id', userId).maybeSingle();
@@ -264,6 +292,7 @@ async function saveUserSettings(next){
 async function refreshAll(){
   const date = state.selectedDate;
   const token = ++loadToken;
+  refreshWeightSeries(); // independent of the day/history/settings load above — own failure domain, own token
   try {
     const [dayData] = await Promise.all([loadDayForDate(date), loadHistory(), loadUserSettings()]);
     if (token !== loadToken) return; // a newer load has since started — discard this one
@@ -275,6 +304,30 @@ async function refreshAll(){
     state.loadError = "Couldn't load your data — check your connection and try refreshing.";
   }
   render();
+}
+
+function refreshWeightSeries(){
+  const rangeKey = state.weightRange;
+  const token = ++weightSeriesToken;
+  state.weightSeriesLoading = true;
+  render();
+  return loadWeightSeries(rangeKey).then((series) => {
+    if (token !== weightSeriesToken) return; // range changed again before this resolved — discard
+    state.weightSeries = series;
+    state.weightSeriesLoading = false;
+    render();
+  }).catch((err) => {
+    if (token !== weightSeriesToken) return;
+    state.weightSeriesLoading = false;
+    state.loadError = 'Could not load weight trend: ' + (err && err.message ? err.message : 'Something went wrong.');
+    render();
+  });
+}
+
+function setWeightRange(rangeKey){
+  if (state.weightRange === rangeKey) return;
+  state.weightRange = rangeKey;
+  refreshWeightSeries();
 }
 
 // ---------- Mutations ----------
@@ -316,6 +369,7 @@ function commitWeightFromInput(){
     if (!ok) return; // save failed — saveDayField already surfaced state.loadError
     state.weightJustSaved = true;
     render();
+    refreshWeightSeries();
     setTimeout(() => { state.weightJustSaved = false; render(); }, 1800);
   });
 }
@@ -841,7 +895,8 @@ function renderDashboard(){
   const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
   const calOver = totals.calories > state.goals.calories;
   const sortedHistory = [...state.history];
-  const weightSeries = [...state.history].filter(d => d.weight != null).sort((a,b)=> a.date < b.date ? -1 : 1);
+  const weightSeries = state.weightSeries; // independent of the 45-day history window — see loadWeightSeries
+  const weightRangeOpt = WEIGHT_RANGE_OPTIONS.find(o => o.key === state.weightRange) || WEIGHT_RANGE_OPTIONS[1];
   const last7 = sortedHistory.slice(0,7);
   const rolling7 = last7.length ? {
     calories: round(last7.reduce((s,d)=>s+d.calories,0)/last7.length),
@@ -1075,8 +1130,18 @@ function renderDashboard(){
     </div>
 
     <div class="card">
-      <h2>Weight trend</h2>
-      ${weightSeries.length > 1 ? `<canvas id="weightChart" height="90"></canvas>` : `<div class="muted" style="font-size:13px;">Log your weight on a couple more mornings to see a trend line.</div>`}
+      <div class="between" style="margin-bottom:12px;">
+        <h2 style="margin:0;">Weight trend</h2>
+        ${state.weightSeriesLoading ? `<span class="muted" style="font-size:12px;">Loading…</span>` : ''}
+      </div>
+      <div class="row" style="gap:8px; margin-bottom:14px;">
+        ${WEIGHT_RANGE_OPTIONS.map(o => `<button class="mode-btn pill weight-range-btn ${state.weightRange===o.key?'active':''}" data-range="${o.key}" style="font-size:12px;">${o.label}</button>`).join('')}
+      </div>
+      ${weightSeries.length > 1
+        ? `<canvas id="weightChart" height="90"></canvas>`
+        : `<div class="muted" style="font-size:13px;">${weightSeries.length === 1
+            ? `Only one weigh-in in ${weightRangeOpt.phrase} — log a couple more mornings to see a trend line.`
+            : `No weight logged in ${weightRangeOpt.phrase} yet — log a morning weight to start a trend line.`}</div>`}
     </div>
 
     <div class="card">
@@ -1207,6 +1272,9 @@ function renderDashboard(){
   });
   document.querySelectorAll('.day-row').forEach(row => {
     row.addEventListener('click', () => setSelectedDate(row.getAttribute('data-date')));
+  });
+  document.querySelectorAll('.weight-range-btn').forEach(btn => {
+    btn.addEventListener('click', () => setWeightRange(btn.getAttribute('data-range')));
   });
 
   // ---- charts ----
