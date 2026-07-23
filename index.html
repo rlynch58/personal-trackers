@@ -382,6 +382,7 @@ async function confirmPendingMeal(){
   if (!state.pendingMeal) return;
   const userId = state.session.user.id;
   const m = state.pendingMeal;
+  const token = loadToken;
   const { data, error } = await supabaseClient.from('meals').insert({
     user_id: userId, log_date: state.selectedDate,
     name: m.name, calories: Math.round(m.calories), protein: Math.round(m.protein),
@@ -389,7 +390,9 @@ async function confirmPendingMeal(){
     sodium: Math.round(m.sodium||0), sugar: Math.round(m.sugar||0),
   }).select().single();
   if (error) { state.loadError = 'Could not save meal: ' + error.message; render(); return; }
-  state.meals.push(data);
+  // Discard if the user switched days while this was saving — state.meals now
+  // represents a different day and must not gain a row that belongs elsewhere.
+  if (token === loadToken) state.meals.push(data);
   resetMealInputs();
   await loadHistory();
   render();
@@ -399,10 +402,13 @@ async function confirmMoveMeal(id){
   const input = document.querySelector(`.move-date-input[data-id="${id}"]`);
   const newDate = input && input.value;
   if (!newDate) return;
+  const token = loadToken;
   const { error } = await supabaseClient.from('meals').update({ log_date: newDate }).eq('id', id);
   if (error) { state.loadError = 'Move failed: ' + error.message; render(); return; }
-  state.meals = state.meals.filter(m => m.id !== id);
-  state.movingMealId = null;
+  if (token === loadToken) {
+    state.meals = state.meals.filter(m => m.id !== id);
+    state.movingMealId = null;
+  }
   await loadHistory();
   render();
 }
@@ -437,13 +443,14 @@ async function logRecentMeal(id){
   const m = (state.recentMeals || []).find(x => x.id === id);
   if (!m) return;
   const userId = state.session.user.id;
+  const token = loadToken;
   const { data, error } = await supabaseClient.from('meals').insert({
     user_id: userId, log_date: state.selectedDate,
     name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
     sodium: m.sodium || 0, sugar: m.sugar || 0,
   }).select().single();
   if (error) { state.loadError = 'Could not log meal: ' + error.message; render(); return; }
-  state.meals.push(data);
+  if (token === loadToken) state.meals.push(data);
   await loadHistory();
   render();
   showToast(`Logged ${m.name}`);
@@ -473,11 +480,14 @@ async function saveEditMeal(id){
     sodium: Math.round(parseFloat(val(`.edit-sodium[data-id="${id}"]`).value) || 0),
     sugar: Math.round(parseFloat(val(`.edit-sugar[data-id="${id}"]`).value) || 0),
   };
+  const token = loadToken;
   const { data, error } = await supabaseClient.from('meals').update(patch).eq('id', id).select().single();
   if (error) { state.loadError = 'Save failed: ' + error.message; render(); return; }
-  const idx = state.meals.findIndex(m => m.id === id);
-  if (idx !== -1) state.meals[idx] = data;
-  state.editingMealId = null;
+  if (token === loadToken) {
+    const idx = state.meals.findIndex(m => m.id === id);
+    if (idx !== -1) state.meals[idx] = data;
+    state.editingMealId = null;
+  }
   await loadHistory();
   render();
   showToast('Meal updated');
