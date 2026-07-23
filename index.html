@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Health">
+<meta name="theme-color" content="#0F2A2B">
 <title>Health Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4"></script>
@@ -53,22 +57,8 @@
   .toast.actionable{pointer-events:auto;display:flex;align-items:center;gap:14px;}
   .toast-undo{color:#FF9A6B;font-weight:700;cursor:pointer;background:none;border:none;font-size:13px;padding:0;font-family:'Space Grotesk',sans-serif;}
 </style>
-<script>
-(function(){
-  const c=document.createElement('canvas');c.width=180;c.height=180;
-  const x=c.getContext('2d');
-  x.fillStyle='#0F2A2B';x.fillRect(0,0,180,180);
-  x.fillStyle='#FF6B35';
-  x.beginPath();x.roundRect(15,65,22,50,4);x.fill();
-  x.beginPath();x.roundRect(40,72,14,36,3);x.fill();
-  x.beginPath();x.roundRect(54,86,72,8,3);x.fill();
-  x.beginPath();x.roundRect(126,72,14,36,3);x.fill();
-  x.beginPath();x.roundRect(143,65,22,50,4);x.fill();
-  const link=document.createElement('link');
-  link.rel='apple-touch-icon';link.href=c.toDataURL('image/png');
-  document.head.appendChild(link);
-})();
-</script>
+<link rel="apple-touch-icon" href="apple-touch-icon-180.png">
+<link rel="manifest" href="manifest.json">
 </head>
 <body>
 <div id="app" class="wrap"></div>
@@ -91,7 +81,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
