@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.27';
+const APP_VERSION = '1.28';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1571,7 +1571,7 @@ function renderDashboard(){
         ? `<textarea id="mealText" rows="2" placeholder="e.g. grilled chicken breast, a cup of rice, side of broccoli">${escapeHtml(state.mealTextValue)}</textarea>`
         : `<div>
             <input type="file" accept="image/*" id="photoInput">
-            ${state.photo ? `<div><img src="${state.photo.previewUrl}" style="margin-top:10px; max-height:140px; border-radius:10px; border:1px solid var(--border);"></div>` : ''}
+            ${state.photo ? `<div><img src="${state.photo.previewUrl}" style="margin-top:10px; max-height:140px; max-width:100%; border-radius:10px; border:1px solid var(--border);"></div>` : ''}
             <div style="margin-top:10px;">
               <input id="photoNoteInput" type="text" maxlength="200" placeholder="Add a note (optional) — e.g. no dressing, half portion" value="${escapeHtml(state.photoNote)}" style="width:100%;">
               <div class="muted" style="font-size:11px; margin-top:3px; text-align:right;">${state.photoNote.length}/200</div>
