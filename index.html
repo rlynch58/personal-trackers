@@ -173,7 +173,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.20';
+const APP_VERSION = '1.21';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1496,14 +1496,14 @@ function renderDashboard(){
             ${ring((totals.calories/state.goals.calories)*100, calRingColor, 'var(--ring-track)', totals.calories, '', '', state.goals.calories, calTextColor, true, 64, null, undefined, 18)}
             <div style="min-width:0;">
               <div class="ring-label" style="white-space:nowrap;">Calories / ${state.goals.calories}</div>
-              <div style="font-size:12px; font-weight:600; margin-top:2px; color:${calOver ? 'var(--coral)' : 'var(--ink-muted)'};">${calStatusText}</div>
+              <div style="font-size:16px; font-weight:700; line-height:1.2; margin-top:2px; color:${calOver ? 'var(--coral)' : 'var(--ink)'};">${calStatusText}</div>
             </div>
           </div>
           <div class="row" style="gap:6px; flex-wrap:nowrap;">
             ${ring(waterGoalPct, 'var(--turquoise)', 'var(--ring-track)', water, 'oz', '', state.goals.water, null, true, 64, expectedWaterPct, waterPaceInfo ? waterPaceInfo.arcColor : undefined, 18)}
             <div style="min-width:0;">
               <div class="ring-label" style="white-space:nowrap;">Water / ${state.goals.water}oz</div>
-              ${waterPaceInfo ? `<div style="font-size:12px; font-weight:700; margin-top:2px; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>` : ''}
+              ${waterPaceInfo ? `<div style="display:inline-block; max-width:100%; margin-top:6px; padding:5px 14px; border-radius:20px; font-size:16px; font-weight:700; line-height:1.2; text-align:center; background:${waterPaceInfo.bg}; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>` : ''}
             </div>
           </div>
         </div>
