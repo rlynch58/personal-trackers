@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.26';
+const APP_VERSION = '1.27';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1487,8 +1487,8 @@ function renderDashboard(){
       </div>
     </div>` : ''}
 
-    <div class="card">
-      <div class="between" style="margin-bottom:16px;">
+    <div class="card" style="padding-top:12px;">
+      <div class="between" style="margin-bottom:10px;">
         <div class="row">
           ${dayBadge({...totals, water})}
           <div style="position:relative; display:inline-block;">
