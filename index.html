@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.23';
+const APP_VERSION = '1.24';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1505,7 +1505,7 @@ function renderDashboard(){
             ${ring((totals.calories/state.goals.calories)*100, calRingColor, 'var(--ring-track)', totals.calories, '', '', state.goals.calories, calTextColor, true, 64, null, undefined, 18)}
             <div style="min-width:0;">
               <div class="ring-label" style="white-space:nowrap;">Calories / ${state.goals.calories}</div>
-              <div style="font-size:16px; font-weight:700; line-height:1.2; margin-top:2px; color:${calOver ? 'var(--coral)' : 'var(--ink)'};">${calStatusText}</div>
+              <div style="font-size:16px; font-weight:700; line-height:1.2; margin-top:2px; text-align:center; color:${calOver ? 'var(--coral)' : 'var(--ink)'};">${calStatusText}</div>
             </div>
           </div>
           <div class="row" style="gap:6px; flex-wrap:nowrap;">
