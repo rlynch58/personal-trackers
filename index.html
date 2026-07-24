@@ -41,12 +41,30 @@
     --gear-bg:transparent;
     --gear-fg:var(--ink-muted);
     --gear-border:var(--border);
+    /* Header-chrome fill (gear/refresh/sign-out backgrounds) — kept separate
+       from --sage/--lime so a later contrast-driven deepening of that token
+       (see the light block) doesn't drag the header buttons along with it.
+       Dark is unaffected either way, so this just mirrors --lime. */
+    --sage-fill:var(--lime);
   }
   /* ---------- Light theme ---------- */
   :root[data-theme="light"] {
-    --bg:#F5F1E8; --surface:#FFFDF7; --ink:#3A362C; --ink-muted:#8A8272; --border:#E0D9C8;
+    --bg:#F5F1E8; --surface:#FFFDF7; --ink:#3A362C; --ink-muted:#716A5D; --border:#CEC2A7;
     --card-border:#E0D9C8;
-    --sage:#5F8A16; --lime:#5F8A16; --gold:#A8710A; --coral:#C0392B; --turquoise:#0F7A80;
+    /* Legibility pass (v1.18): --ink-muted darkened 3.74:1 -> 4.75:1 (worst
+       case, against --bg) and --border darkened one visible step so pill/chip
+       borders (e.g. recent-meal chips) read as tappable, not watermarked. */
+    --sage:#4D7012; --lime:#4D7012; --gold:#865A08; --coral:#C0392B; --turquoise:#107D89;
+    /* --sage/--lime deepened 4.02:1 -> 5.67:1 so the protein-preset outline
+       button and other sage/lime TEXT uses clear 4.5:1; --sage-fill (dark
+       :root above) keeps the header buttons at the original #5F8A16 so they
+       don't drift along with this. --gold deepened 4.10:1 -> 5.93:1 (and
+       4.5:1+ against --gold-light) for its pill-label text uses — the
+       ghost-arc amber (--ghost-gold) is a separate token and is untouched.
+       --turquoise nudged brighter/bluer (5.02:1 -> 4.78:1, still clear of
+       4.5:1) purely to separate its perceived darkness from the deepened
+       --sage/--lime — the two read as near-identical at stat-number size
+       otherwise. */
     --accent:#D9581F; --action-text:#FFFDF7;
     --ring-label:#4A6560;
     --plum:#6B5A94;
@@ -67,7 +85,8 @@
     --ring-track:#E5E0D2;
     --ghost-gold:#E0BC6E; --ghost-coral:#E6B0A2;
     --chart-grid:rgba(58,54,44,.12); --chart-tick:rgba(58,54,44,.65);
-    --gear-bg:var(--lime); --gear-fg:var(--action-text); --gear-border:transparent;
+    --gear-bg:var(--sage-fill); --gear-fg:var(--action-text); --gear-border:transparent;
+    --sage-fill:#5F8A16; /* frozen header-chrome green — see the dark block's comment */
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font-family:'Inter',sans-serif; }
@@ -135,7 +154,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.17';
+const APP_VERSION = '1.18';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1377,8 +1396,8 @@ function renderDashboard(){
       </div>
       <div class="row" style="gap:8px; flex-shrink:0;">
         <button id="settingsBtn" title="Settings" style="width:36px; height:36px; border:1px solid var(--gear-border); border-radius:8px; background:var(--gear-bg); color:var(--gear-fg); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">⚙</button>
-        <button id="refreshBtn" title="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--lime); color:var(--action-text); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
-        <button id="signOutBtn" style="border:none; background:var(--lime); color:var(--action-text); height:36px; padding:0 14px; border-radius:10px; font-weight:600; display:flex; align-items:center; justify-content:center; white-space:nowrap;">Sign out</button>
+        <button id="refreshBtn" title="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--sage-fill); color:var(--action-text); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
+        <button id="signOutBtn" style="border:none; background:var(--sage-fill); color:var(--action-text); height:36px; padding:0 14px; border-radius:10px; font-weight:600; display:flex; align-items:center; justify-content:center; white-space:nowrap;">Sign out</button>
       </div>
     </div>
 
