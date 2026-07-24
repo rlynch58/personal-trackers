@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.24';
+const APP_VERSION = '1.25';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -212,6 +212,13 @@ const state = {
   followingToday: true, // false once the user deliberately navigates to a non-today date — see checkMidnightRollover
   dayRow: null,
   meals: [],
+  // false until the first loadDayForDate/loadHistory round-trip in refreshAll()
+  // has actually completed (success or failure) — gates the pace indicators so
+  // they never compute against the pre-load defaults above (dayRow: null reads
+  // as 0oz water, meals: [] reads as 0g protein), which against a positive
+  // mid-day pace goal reads as maximally behind and flashes coral. See
+  // renderDashboard's expectedProtein/expectedWater.
+  dayLoaded: false,
   history: [],
   mealMode: 'text',
   mealTextValue: '',
@@ -510,9 +517,11 @@ async function refreshAll(){
     state.dayRow = dayData.dayRow;
     state.meals = dayData.meals;
     state.loadError = null;
+    state.dayLoaded = true;
   } catch (e) {
     if (token !== loadToken) return;
     state.loadError = "Couldn't load your data — check your connection and try refreshing.";
+    state.dayLoaded = true; // the attempt finished (if unsuccessfully) — no longer "pre-load defaults"
   }
   render();
 }
@@ -1378,14 +1387,18 @@ function renderDashboard(){
   const week = computeWeekSummary();
 
   // Pace only makes sense against the actual clock "right now," so it's only
-  // shown while looking at today — not when browsing a past day's log.
+  // shown while looking at today — not when browsing a past day's log. It's
+  // also gated on state.dayLoaded: totals/water read as 0 before the day's
+  // real data has loaded (see state.dayLoaded's comment), and computing pace
+  // against that placeholder 0 would flash the escalated/coral tier against
+  // any positive goal for the split second before real data arrives.
   const isViewingToday = state.selectedDate === todayKey();
-  const expectedProtein = isViewingToday ? computePaceExpected(state.goals.protein) : null;
+  const expectedProtein = (isViewingToday && state.dayLoaded) ? computePaceExpected(state.goals.protein) : null;
   const proteinGoalPct = state.goals.protein > 0 ? clampPct((totals.protein/state.goals.protein)*100) : 0;
   const expectedProteinPct = (expectedProtein != null && state.goals.protein > 0) ? clampPct((expectedProtein/state.goals.protein)*100) : null;
   const paceInfo = (expectedProtein != null) ? proteinPaceLabel(totals.protein, expectedProtein) : null;
 
-  const expectedWater = isViewingToday ? computePaceExpected(state.goals.water) : null;
+  const expectedWater = (isViewingToday && state.dayLoaded) ? computePaceExpected(state.goals.water) : null;
   const waterGoalPct = state.goals.water > 0 ? clampPct((water/state.goals.water)*100) : 0;
   const expectedWaterPct = (expectedWater != null && state.goals.water > 0) ? clampPct((expectedWater/state.goals.water)*100) : null;
   // Zero water logged is real data, not a gap — water pace is computed the same
