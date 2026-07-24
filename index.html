@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.28';
+const APP_VERSION = '1.29';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1927,7 +1927,22 @@ window.addEventListener('focus', checkMidnightRollover);
 // page. This is a page-lifetime interval (never torn down), same as the
 // visibilitychange/focus listeners above; there's no logout-driven cleanup
 // path for those either, so this doesn't introduce a new class of leak.
-setInterval(() => { checkMidnightRollover(); render(); }, 60000);
+//
+// The render() here is guarded (checkMidnightRollover() is not — that must
+// always run): a full re-render replaces #app's innerHTML, which wipes any
+// value not yet committed to state (weight input only commits on blur,
+// edit-meal/settings/pending-meal fields only read from the DOM at save
+// time) and steals focus out of whatever's being typed into, even for the
+// fields that ARE state-backed. A stale pace indicator for one 60s cycle is
+// strictly better than losing typed input, so skip the render whenever an
+// input/textarea/select is focused or an editable panel is open.
+setInterval(() => {
+  checkMidnightRollover();
+  const activeTag = document.activeElement && document.activeElement.tagName;
+  const hasFocusedField = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+  const hasOpenForm = state.settingsOpen || state.pendingMeal || state.editingMealId || state.movingMealId;
+  if (!hasFocusedField && !hasOpenForm) render();
+}, 60000);
 
 // onAuthStateChange fires once immediately with the current session (event
 // INITIAL_SESSION) as soon as it's subscribed, so it alone owns boot — a
