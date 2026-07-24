@@ -46,6 +46,12 @@
        (see the light block) doesn't drag the header buttons along with it.
        Dark is unaffected either way, so this just mirrors --lime. */
     --sage-fill:var(--lime);
+    /* Recent-meal chips (v1.19): dark already reads fine as bare transparent
+       buttons, so both tokens just mirror the existing button defaults here —
+       zero visual change. Light gets a real fill + full-ink text instead
+       (see the light block) so they read as tappable, not watermarks. */
+    --chip-bg:transparent;
+    --chip-text:var(--ink-muted);
   }
   /* ---------- Light theme ---------- */
   :root[data-theme="light"] {
@@ -54,17 +60,20 @@
     /* Legibility pass (v1.18): --ink-muted darkened 3.74:1 -> 4.75:1 (worst
        case, against --bg) and --border darkened one visible step so pill/chip
        borders (e.g. recent-meal chips) read as tappable, not watermarked. */
-    --sage:#4D7012; --lime:#4D7012; --gold:#865A08; --coral:#C0392B; --turquoise:#107D89;
+    --sage:#4D7012; --lime:#4D7012; --gold:#865A08; --coral:#C0392B; --turquoise:#0A6E9E;
     /* --sage/--lime deepened 4.02:1 -> 5.67:1 so the protein-preset outline
        button and other sage/lime TEXT uses clear 4.5:1; --sage-fill (dark
        :root above) keeps the header buttons at the original #5F8A16 so they
        don't drift along with this. --gold deepened 4.10:1 -> 5.93:1 (and
        4.5:1+ against --gold-light) for its pill-label text uses — the
        ghost-arc amber (--ghost-gold) is a separate token and is untouched.
-       --turquoise nudged brighter/bluer (5.02:1 -> 4.78:1, still clear of
-       4.5:1) purely to separate its perceived darkness from the deepened
-       --sage/--lime — the two read as near-identical at stat-number size
-       otherwise. */
+       --turquoise (v1.19): the v1.18 nudge (#107D89) only separated
+       luminance from the deepened --sage/--lime, and on real devices the two
+       still read as the same color family at a glance. Moved decisively
+       bluer into deep-cyan/blue territory (#0A6E9E, 5.52:1 on --surface,
+       4.69:1 on --turquoise-light) so avg-water/the water ring/the water
+       quick-add pills read as unambiguously blue next to avg-protein's
+       green. */
     --accent:#D9581F; --action-text:#FFFDF7;
     --ring-label:#4A6560;
     --plum:#6B5A94;
@@ -87,6 +96,7 @@
     --chart-grid:rgba(58,54,44,.12); --chart-tick:rgba(58,54,44,.65);
     --gear-bg:var(--sage-fill); --gear-fg:var(--action-text); --gear-border:transparent;
     --sage-fill:#5F8A16; /* frozen header-chrome green — see the dark block's comment */
+    --chip-bg:#F3EEE2; --chip-text:var(--ink);
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font-family:'Inter',sans-serif; }
@@ -105,6 +115,7 @@
   button.primary { background:var(--accent); color:var(--action-text); border:none; }
   button.pill { border-radius:20px; padding:6px 13px; font-size:13px; }
   .water-btn { border:1px solid var(--turquoise); color:var(--turquoise); background:var(--turquoise-light); border-radius:20px; }
+  .recent-meal-chip { background:var(--chip-bg); color:var(--chip-text); }
   .mode-btn.active { background:var(--accent); color:var(--action-text); border-color:var(--accent); }
   .err { background:var(--coral-light); color:var(--coral); padding:8px 12px; border-radius:10px; font-size:13px; margin-bottom:14px; }
   .ok { background:var(--sage-light); color:var(--sage); padding:8px 12px; border-radius:10px; font-size:13px; margin-bottom:14px; }
@@ -154,7 +165,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.18';
+const APP_VERSION = '1.19';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1484,7 +1495,7 @@ function renderDashboard(){
             ${ring(waterGoalPct, 'var(--turquoise)', 'var(--ring-track)', water, 'oz', '', state.goals.water, null, true, 64, expectedWaterPct, waterPaceInfo ? waterPaceInfo.arcColor : undefined, 18)}
             <div style="min-width:0;">
               <div class="ring-label" style="white-space:nowrap;">Water / ${state.goals.water}oz</div>
-              ${waterPaceInfo ? `<div style="font-size:12px; font-weight:600; margin-top:2px; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>` : ''}
+              ${waterPaceInfo ? `<div style="font-size:12px; font-weight:700; margin-top:2px; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>` : ''}
             </div>
           </div>
         </div>
