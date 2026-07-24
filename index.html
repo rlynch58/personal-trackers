@@ -86,7 +86,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.15';
+const APP_VERSION = '1.16';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
 
@@ -978,13 +978,16 @@ async function signOut(){
 // progress arc always paints on top of it. ghostColor is driven by the same
 // pace-tier decision that colors the label pill (see computePaceState) so the
 // two can never disagree — it defaults to gold only for callers that don't pass one.
-function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88, ghostPct=null, ghostColor='var(--gold)'){
+// fontSizeOverride lets calorie/water (both size=64) render their number at a
+// fixed 18px instead of the formula's 11px, without touching protein (size=128,
+// still formula-derived at ~22px) — pass null/omit to keep the existing formula.
+function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88, ghostPct=null, ghostColor='var(--gold)', fontSizeOverride=null){
   const r = size/2 - 4.5;
   const c = size/2;
   const circumference = 2 * Math.PI * r;
   const clampedPct = clampPct(pct);
   const offset = circumference * (1 - clampedPct/100);
-  const fontSize = Math.round(size * 0.17);
+  const fontSize = fontSizeOverride != null ? fontSizeOverride : Math.round(size * 0.17);
   let ghostArc = '';
   if (ghostPct != null && ghostPct > clampedPct) {
     const clampedGhostPct = clampPct(ghostPct);
@@ -1253,15 +1256,15 @@ function renderDashboard(){
   }
 
   app.innerHTML = `
-    <div class="between" style="margin-bottom:6px;">
-      <div>
+    <div class="between" style="margin-bottom:6px; gap:8px; flex-wrap:nowrap;">
+      <div style="min-width:0;">
         <h1 style="font-family:'Space Grotesk',sans-serif; font-size:1.4rem; font-weight:800; letter-spacing:-.03em; margin:0; color:var(--accent);">Health<span style="color:var(--ink);">.</span><span class="ver">v${APP_VERSION}</span></h1>
         <div class="muted" style="font-size:13px; margin-top:2px;">${state.goals.protein}g protein goal · ${state.goals.calories} cal cap · ${state.goals.water}oz water</div>
       </div>
-      <div class="row" style="gap:8px;">
+      <div class="row" style="gap:8px; flex-shrink:0;">
         <button id="settingsBtn" title="Settings" style="width:36px; height:36px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--ink-muted); font-size:1rem; display:flex; align-items:center; justify-content:center; padding:0;">⚙</button>
         <button id="refreshBtn" title="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--lime); color:var(--action-text); font-size:1rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
-        <button id="signOutBtn" style="border:none; background:var(--lime); color:var(--action-text); padding:8px 14px; border-radius:10px; font-weight:600;">Sign out</button>
+        <button id="signOutBtn" style="border:none; background:var(--lime); color:var(--action-text); height:36px; padding:0 14px; border-radius:10px; font-weight:600; display:flex; align-items:center; justify-content:center; white-space:nowrap;">Sign out</button>
       </div>
     </div>
 
@@ -1327,17 +1330,17 @@ function renderDashboard(){
           ${paceInfo ? `<div style="margin-top:8px; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; background:${paceInfo.bg}; color:${paceInfo.color};">${paceInfo.text}</div>` : ''}
         </div>
         <div style="display:flex; flex-direction:column; gap:14px; min-width:0;">
-          <div class="row" style="gap:10px; flex-wrap:nowrap;">
-            ${ring((totals.calories/state.goals.calories)*100, calRingColor, 'rgba(234,247,246,.14)', totals.calories, '', '', state.goals.calories, calTextColor, true, 64)}
+          <div class="row" style="gap:6px; flex-wrap:nowrap;">
+            ${ring((totals.calories/state.goals.calories)*100, calRingColor, 'rgba(234,247,246,.14)', totals.calories, '', '', state.goals.calories, calTextColor, true, 64, null, undefined, 18)}
             <div style="min-width:0;">
-              <div class="ring-label">Calories / ${state.goals.calories}</div>
+              <div class="ring-label" style="white-space:nowrap;">Calories / ${state.goals.calories}</div>
               <div style="font-size:12px; font-weight:600; margin-top:2px; color:${calOver ? 'var(--coral)' : 'var(--ink-muted)'};">${calStatusText}</div>
             </div>
           </div>
-          <div class="row" style="gap:10px; flex-wrap:nowrap;">
-            ${ring(waterGoalPct, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', '', state.goals.water, null, true, 64, expectedWaterPct, waterPaceInfo ? waterPaceInfo.arcColor : undefined)}
+          <div class="row" style="gap:6px; flex-wrap:nowrap;">
+            ${ring(waterGoalPct, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', '', state.goals.water, null, true, 64, expectedWaterPct, waterPaceInfo ? waterPaceInfo.arcColor : undefined, 18)}
             <div style="min-width:0;">
-              <div class="ring-label">Water / ${state.goals.water}oz</div>
+              <div class="ring-label" style="white-space:nowrap;">Water / ${state.goals.water}oz</div>
               ${waterPaceInfo ? `<div style="font-size:12px; font-weight:600; margin-top:2px; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => `<div>${escapeHtml(l)}</div>`).join('')}</div>` : ''}
             </div>
           </div>
