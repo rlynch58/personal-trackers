@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.25';
+const APP_VERSION = '1.26';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1531,10 +1531,8 @@ function renderDashboard(){
         </div>
       </div>
 
-      <div class="row center" style="margin-top:4px;" id="waterBtnRow"></div>
-
-      <div class="row center" style="margin-top:10px; gap:8px;">
-        <input id="customWaterInput" type="number" min="0" inputmode="decimal" placeholder="Custom" style="width:90px;" class="mono">
+      <div class="row center" style="margin-top:4px; gap:8px; flex-wrap:nowrap;" id="waterBtnRow">
+        <input id="customWaterInput" type="number" min="0" inputmode="decimal" placeholder="Custom" style="width:85px;" class="mono">
         <span class="muted" style="font-size:13px;">oz</span>
         <button id="customWaterBtn" style="padding:7px 14px; font-size:13px;">Add</button>
       </div>
@@ -1771,13 +1769,17 @@ function renderDashboard(){
   document.getElementById('weightInput').addEventListener('blur', commitWeightFromInput);
   document.getElementById('saveWeightBtn').addEventListener('click', commitWeightFromInput);
 
+  // Pills are inserted before the row's existing first child (the Custom
+  // input) rather than appended, since waterBtnRow now hosts the whole
+  // condensed row (pills + Custom + oz + Add) as one line, not just pills.
   const waterRow = document.getElementById('waterBtnRow');
-  [12,16,20,40].forEach(oz => {
+  const waterRowFirstChild = waterRow.firstChild;
+  [16,40].forEach(oz => {
     const btn = document.createElement('button');
     btn.className = 'water-btn pill';
     btn.textContent = `+${oz}oz`;
     btn.addEventListener('click', () => addWater(oz));
-    waterRow.appendChild(btn);
+    waterRow.insertBefore(btn, waterRowFirstChild);
   });
 
   const submitCustomWater = () => {
