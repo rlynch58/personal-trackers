@@ -55,11 +55,19 @@
   }
   /* ---------- Light theme ---------- */
   :root[data-theme="light"] {
-    --bg:#F5F1E8; --surface:#FFFDF7; --ink:#3A362C; --ink-muted:#716A5D; --border:#CEC2A7;
-    --card-border:#E0D9C8;
+    --bg:#EDE7D8; --surface:#FFFDF7; --ink:#3A362C; --ink-muted:#6B6558; --border:#CEC2A7;
+    --card-border:#D9D0BB;
     /* Legibility pass (v1.18): --ink-muted darkened 3.74:1 -> 4.75:1 (worst
        case, against --bg) and --border darkened one visible step so pill/chip
-       borders (e.g. recent-meal chips) read as tappable, not watermarked. */
+       borders (e.g. recent-meal chips) read as tappable, not watermarked.
+       Card/page separation pass (v1.20): --bg deepened #F5F1E8 -> #EDE7D8
+       (same warm hue, just darker) so cards read as raised instead of
+       blending into the page; --ink-muted deepened again, #716A5D -> #6B6558
+       (5.69:1 on --surface, 4.69:1 on the new --bg -- --bg is now the
+       tighter constraint of the two); --card-border deepened #E0D9C8 ->
+       #D9D0BB to restore roughly its original relative distinctness from
+       the page (was 1.25:1 vs the old --bg, is 1.24:1 vs the new one) now
+       that the page itself sits closer to the border's own tone. */
     --sage:#4D7012; --lime:#4D7012; --gold:#865A08; --coral:#C0392B; --turquoise:#0A6E9E;
     /* --sage/--lime deepened 4.02:1 -> 5.67:1 so the protein-preset outline
        button and other sage/lime TEXT uses clear 4.5:1; --sage-fill (dark
@@ -165,7 +173,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.19';
+const APP_VERSION = '1.20';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
