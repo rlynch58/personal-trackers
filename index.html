@@ -81,9 +81,19 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.12';
+const APP_VERSION = '1.13';
 const MEAL_DELETE_UNDO_MS = 5000;
 const FN_NAME = 'estimate-nutrition';
+
+// Pace-indicator tuning — all in one place so protein/water pace behavior can
+// be adjusted together. Active window is shared by every paced metric.
+const PACE_ACTIVE_START_HOUR = 7;      // 7:00 AM
+const PACE_ACTIVE_WINDOW_MINUTES = 900; // 15 hours — window ends 10:00 PM
+const PROTEIN_PACE_TOLERANCE_G = 10;
+const PROTEIN_PACE_ESCALATION_G = 30;
+const WATER_PACE_TOLERANCE_OZ = 5;
+const WATER_PACE_ESCALATION_OZ = 16;
+const WATER_BOTTLE_OZ = 16;
 
 const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY, {
   auth: {
@@ -957,11 +967,13 @@ async function signOut(){
 // ---------- Rendering ----------
 // size is configurable so the protein ring can be rendered as the visual hero
 // (larger) while calories/water stay secondary — see the ring row in renderDashboard.
-// ghostPct (protein pace indicator only — null for every other ring) draws a dim
+// ghostPct (pace indicators only — null for every other ring) draws a dim
 // "this much is missing" arc from the actual position out to the expected-pace
 // position. Drawn before the actual-progress circle in source order so the real
-// progress arc always paints on top of it.
-function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88, ghostPct=null){
+// progress arc always paints on top of it. ghostColor is driven by the same
+// pace-tier decision that colors the label pill (see computePaceState) so the
+// two can never disagree — it defaults to gold only for callers that don't pass one.
+function ring(pct, color, track, value, unit, label, goal, textColor, hideCaption, size=88, ghostPct=null, ghostColor='var(--gold)'){
   const r = size/2 - 4.5;
   const c = size/2;
   const circumference = 2 * Math.PI * r;
@@ -973,7 +985,7 @@ function ring(pct, color, track, value, unit, label, goal, textColor, hideCaptio
     const clampedGhostPct = clampPct(ghostPct);
     const segLen = circumference * (clampedGhostPct - clampedPct) / 100;
     const gapLen = circumference - segLen;
-    ghostArc = `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--gold)" stroke-width="9" opacity="0.35"
+    ghostArc = `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${ghostColor}" stroke-width="9" opacity="0.35"
       stroke-dasharray="${segLen} ${gapLen}" stroke-dashoffset="${offset}" stroke-linecap="round"
       transform="rotate(-90 ${c} ${c})"></circle>`;
   }
@@ -1020,32 +1032,68 @@ function dayHitGoals(d){
   return d.calories > 0 && d.calories <= state.goals.calories && d.protein >= state.goals.protein && (d.water||0) >= state.goals.water;
 }
 
-// Active window is 7:00 AM - 10:00 PM local time (900 minutes). Returns the
-// expected protein at this exact moment, clamped to [0, goal] — or null when
-// there's nothing to show: no goal configured, or outside the active window.
-// Always reads a fresh `new Date()`, so it self-corrects across midnight
-// rollover the same way every other date-derived value in this file does.
-function computeProteinPace(){
-  const goal = state.goals.protein;
+// Shared by every paced metric (protein, water, ...): active window is
+// 7:00 AM - 10:00 PM local time. Returns the expected value for the given
+// goal at this exact moment, clamped to [0, goal] — or null when there's
+// nothing to show: no goal configured, or outside the active window. Always
+// reads a fresh `new Date()`, so it self-corrects across midnight rollover
+// the same way every other date-derived value in this file does.
+function computePaceExpected(goal){
   if (!goal || goal <= 0) return null;
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), PACE_ACTIVE_START_HOUR, 0, 0, 0);
   const minutesSinceStart = (now - startOfDay) / 60000;
-  if (minutesSinceStart < 0 || minutesSinceStart > 900) return null; // before 7am, or after 10pm — stays silent rather than nagging
-  return Math.max(0, Math.min(goal, goal * (minutesSinceStart / 900)));
+  if (minutesSinceStart < 0 || minutesSinceStart > PACE_ACTIVE_WINDOW_MINUTES) return null; // before start hour, or after the window closes — stays silent rather than nagging
+  return Math.max(0, Math.min(goal, goal * (minutesSinceStart / PACE_ACTIVE_WINDOW_MINUTES)));
 }
 
-// actual/expected are both in grams. Returns null only if called incorrectly;
-// callers should already have checked computeProteinPace() didn't return null.
-function proteinPaceLabel(actual, expected){
+// Single source of truth for "how far ahead/behind pace" — every paced metric
+// (protein, water) goes through this, and both the ghost-arc color (arcColor)
+// and the label pill's color (color) are read directly off its result, so
+// they can never disagree by computing the escalation threshold in two
+// places. These are deliberately two different fields, not one: the pill has
+// a green "on pace"/"ahead" state the arc has no equivalent for — the ring's
+// ghost arc only ever exists to show a gap, so it's only ever gold or red,
+// even on the rare boundary render where a still-on-pace deficit leaves a
+// sliver of arc visible (e.g. exactly at the tolerance edge).
+function computePaceState(actual, expected, tolerance, escalationThreshold){
   const deficit = Math.round(expected - actual); // positive = behind pace, negative = ahead
-  if (Math.abs(deficit) <= 10) return { text: 'On pace', color: 'var(--lime)', bg: 'var(--sage-light)' };
-  if (deficit < 0) return { text: `${Math.abs(deficit)}g ahead of pace`, color: 'var(--lime)', bg: 'var(--sage-light)' };
-  if (deficit < 30) return { text: `${deficit}g behind pace`, color: 'var(--gold)', bg: 'var(--gold-light)' };
-  // Reuse the user's configured Premier Protein preset size rather than hardcoding 30g again.
-  const shakeSize = (state.proteinPreset && state.proteinPreset.protein > 0) ? state.proteinPreset.protein : DEFAULT_PROTEIN_PRESET.protein;
-  const shakes = Math.ceil(deficit / shakeSize);
-  return { text: `${deficit}g behind — ${shakes} shake${shakes===1?'':'s'}`, color: 'var(--coral)', bg: 'var(--coral-light)' };
+  if (Math.abs(deficit) <= tolerance) return { tier: 'onpace', deficit, color: 'var(--lime)', bg: 'var(--sage-light)', arcColor: 'var(--gold)' };
+  if (deficit < 0) return { tier: 'ahead', deficit, color: 'var(--lime)', bg: 'var(--sage-light)', arcColor: 'var(--gold)' };
+  if (deficit < escalationThreshold) return { tier: 'mild', deficit, color: 'var(--gold)', bg: 'var(--gold-light)', arcColor: 'var(--gold)' };
+  return { tier: 'severe', deficit, color: 'var(--coral)', bg: 'var(--coral-light)', arcColor: 'var(--coral)' };
+}
+
+// actual/expected are both in grams. Returns { tier, deficit, color, bg, text }.
+function proteinPaceLabel(actual, expected){
+  const p = computePaceState(actual, expected, PROTEIN_PACE_TOLERANCE_G, PROTEIN_PACE_ESCALATION_G);
+  let text;
+  if (p.tier === 'onpace') text = 'On pace';
+  else if (p.tier === 'ahead') text = `${Math.abs(p.deficit)}g ahead of pace`;
+  else if (p.tier === 'mild') text = `${p.deficit}g behind pace`;
+  else {
+    // Reuse the user's configured Premier Protein preset size rather than hardcoding 30g again.
+    const shakeSize = (state.proteinPreset && state.proteinPreset.protein > 0) ? state.proteinPreset.protein : DEFAULT_PROTEIN_PRESET.protein;
+    const shakes = Math.ceil(p.deficit / shakeSize);
+    text = `${p.deficit}g behind — ${shakes} shake${shakes===1?'':'s'}`;
+  }
+  return { ...p, text };
+}
+
+// actual/expected are both in oz. Returns { tier, deficit, color, bg, lines }
+// — lines is an array (1 entry normally, 2 for the bottle-count state, which
+// doesn't fit on one line next to the secondary water ring).
+function waterPaceLabel(actual, expected){
+  const p = computePaceState(actual, expected, WATER_PACE_TOLERANCE_OZ, WATER_PACE_ESCALATION_OZ);
+  let lines;
+  if (p.tier === 'onpace') lines = ['On pace'];
+  else if (p.tier === 'ahead') lines = [`${Math.abs(p.deficit)}oz ahead of pace`];
+  else if (p.tier === 'mild') lines = [`${p.deficit}oz behind pace`];
+  else {
+    const bottles = Math.ceil(p.deficit / WATER_BOTTLE_OZ);
+    lines = [`${p.deficit}oz behind`, `${bottles} bottle${bottles===1?'':'s'}`];
+  }
+  return { ...p, lines };
 }
 
 // Backs the "Last 7 days" card. The window is always today back through six
@@ -1153,10 +1201,18 @@ function renderDashboard(){
 
   // Pace only makes sense against the actual clock "right now," so it's only
   // shown while looking at today — not when browsing a past day's log.
-  const expectedProtein = (state.selectedDate === todayKey()) ? computeProteinPace() : null;
+  const isViewingToday = state.selectedDate === todayKey();
+  const expectedProtein = isViewingToday ? computePaceExpected(state.goals.protein) : null;
   const proteinGoalPct = state.goals.protein > 0 ? clampPct((totals.protein/state.goals.protein)*100) : 0;
   const expectedProteinPct = (expectedProtein != null && state.goals.protein > 0) ? clampPct((expectedProtein/state.goals.protein)*100) : null;
   const paceInfo = (expectedProtein != null) ? proteinPaceLabel(totals.protein, expectedProtein) : null;
+
+  const expectedWater = isViewingToday ? computePaceExpected(state.goals.water) : null;
+  const waterGoalPct = state.goals.water > 0 ? clampPct((water/state.goals.water)*100) : 0;
+  const expectedWaterPct = (expectedWater != null && state.goals.water > 0) ? clampPct((expectedWater/state.goals.water)*100) : null;
+  // Zero water logged is real data, not a gap — water pace is computed the same
+  // way regardless of whether `water` happens to be 0.
+  const waterPaceInfo = (expectedWater != null) ? waterPaceLabel(water, expectedWater) : null;
 
   let weightChangeHtml;
   if (!week.startPoint || !week.endPoint || week.startPoint.date === week.endPoint.date) {
@@ -1253,7 +1309,7 @@ function renderDashboard(){
 
       <div class="row" style="justify-content:center; align-items:center; gap:22px; margin-bottom:8px;">
         <div style="display:flex; flex-direction:column; align-items:center;">
-          ${ring(proteinGoalPct, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', state.goals.protein, null, false, 128, expectedProteinPct)}
+          ${ring(proteinGoalPct, 'var(--lime)', 'rgba(234,247,246,.14)', totals.protein, 'g', 'Protein', state.goals.protein, null, false, 128, expectedProteinPct, paceInfo ? paceInfo.arcColor : undefined)}
           ${paceInfo ? `<div style="margin-top:8px; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; background:${paceInfo.bg}; color:${paceInfo.color};">${paceInfo.text}</div>` : ''}
         </div>
         <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
@@ -1264,7 +1320,10 @@ function renderDashboard(){
               <div style="font-size:9px; color:var(--coral); font-weight:600; margin-top:2px;">${round(totals.calories-state.goals.calories)} over</div>
             </div>`
             : ring((totals.calories/state.goals.calories)*100, 'var(--accent)', 'rgba(234,247,246,.14)', totals.calories, '', 'Calories', state.goals.calories, null, false, 64)}
-          ${ring((water/state.goals.water)*100, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', 'Water', state.goals.water, null, false, 64)}
+          <div style="display:flex; flex-direction:column; align-items:center;">
+            ${ring(waterGoalPct, 'var(--turquoise)', 'rgba(234,247,246,.14)', water, 'oz', 'Water', state.goals.water, null, false, 64, expectedWaterPct, waterPaceInfo ? waterPaceInfo.arcColor : undefined)}
+            ${waterPaceInfo ? `<div style="margin-top:6px; padding:4px 10px; border-radius:14px; font-size:10px; font-weight:600; text-align:center; line-height:1.35; background:${waterPaceInfo.bg}; color:${waterPaceInfo.color};">${waterPaceInfo.lines.map(l => escapeHtml(l)).join('<br>')}</div>` : ''}
+          </div>
         </div>
       </div>
 
