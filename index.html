@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.37';
+const APP_VERSION = '1.38';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -239,6 +239,13 @@ const state = {
   recentMealsLoading: false,
   editingMealId: null,
   goals: { ...DEFAULT_GOALS },
+  // Historical goal record: one row per goal change ever (from the
+  // goal_periods table), sorted by effective_date ascending. Bounded and
+  // small — loaded once per refreshAll, read synchronously by goalsFor.
+  // state.goals stays the source of truth for "current goals" and for
+  // sodium/sugar (which goal_periods doesn't store); this is only the
+  // dated overlay for calories/protein/water. See goalsFor.
+  goalPeriods: [],
   proteinPreset: { ...DEFAULT_PROTEIN_PRESET },
   weightRange: '30',
   weightSeries: [],
@@ -255,13 +262,37 @@ const state = {
   themePreference: getStoredThemePreference() || 'system', // 'light' | 'dark' | 'system'
 };
 
-// Seam introduced deliberately ahead of per-day goal history. dateKey is
-// currently ignored and this just returns the one global set of goals --
-// that's intentional, not a bug, since dated goals don't exist yet. When
-// they do, this is the single function to change; every consumer already
-// asks "goals as of this date" instead of reading state.goals directly.
-function goalsFor(dateKey){
-  return state.goals;
+// Resolves the goals in effect on a given day: the goal_periods row with the
+// greatest effective_date that is <= the requested date. Returns a MERGED
+// object -- state.goals (which carries all five keys: calories, protein,
+// water, sodium, sugar) with the dated calories/protein/water overlaid on
+// top. The return shape must never narrow: goal_periods only stores the three
+// dated metrics, but callers still read sodium/sugar off this result (see
+// renderDashboard's sodium/sugar line), so those pass through from state.goals
+// untouched. Fallback order when nothing matches: earliest period row, then
+// state.goals -- never undefined or partial. The `key` param is a YYYY-MM-DD
+// dateKey string; effective_date is stored the same way, so lexicographic
+// comparison is chronological.
+function goalsFor(key){
+  const periods = state.goalPeriods;
+  let match = null;
+  if (periods && periods.length) {
+    // periods is sorted ascending, so the last one still <= key wins.
+    for (let i = 0; i < periods.length; i++) {
+      if (periods[i].effective_date <= key) match = periods[i];
+      else break;
+    }
+    // key predates every period (shouldn't happen given the backfill, but
+    // guard): fall back to the earliest period rather than dropping to global.
+    if (!match) match = periods[0];
+  }
+  if (!match) return state.goals; // no dated history at all -- global goals
+  return {
+    ...state.goals,
+    calories: match.calories,
+    protein: match.protein,
+    water: match.water,
+  };
 }
 
 let macroChartInstance = null;
@@ -636,13 +667,46 @@ async function saveUserSettings(next){
   if (error) throw error;
 }
 
+// Loads the full (small, bounded) goal history for this user. Ordered
+// ascending so goalsFor's greatest-effective_date-<=-date lookup can walk
+// it directly. Loaded alongside user_settings in refreshAll -- both feed
+// goalsFor and must be in place together.
+async function loadGoalPeriods(){
+  const userId = state.session.user.id;
+  const { data, error } = await supabaseClient
+    .from('goal_periods')
+    .select('effective_date, calories, protein, water')
+    .eq('user_id', userId)
+    .order('effective_date', { ascending: true });
+  if (error) throw error;
+  state.goalPeriods = data || [];
+}
+
+// Records the current goals as effective from today's LOCAL calendar date
+// (todayKey, not a UTC date). Upsert on (user_id, effective_date) so several
+// edits on the same day replace rather than collide. Deliberately a SECOND
+// write alongside saveUserSettings -- user_settings stays the source of truth
+// for current goals + sodium/sugar; goal_periods is the dated history for the
+// three metrics it tracks. goal_periods columns are integer, so round.
+async function saveGoalPeriod(goals){
+  const userId = state.session.user.id;
+  const { error } = await supabaseClient.from('goal_periods').upsert({
+    user_id: userId,
+    effective_date: todayKey(),
+    calories: Math.round(goals.calories),
+    protein: Math.round(goals.protein),
+    water: Math.round(goals.water),
+  }, { onConflict: 'user_id,effective_date' });
+  if (error) throw error;
+}
+
 async function refreshAll(){
   const date = state.selectedDate;
   const token = ++loadToken;
   refreshWeightSeries(); // independent of the day/history/settings load above — own failure domain, own token
   refreshStreak(); // same independence — own failure domain, own token, see loadStreakData's comment
   try {
-    const [dayData] = await Promise.all([loadDayForDate(date), loadHistory(), loadUserSettings()]);
+    const [dayData] = await Promise.all([loadDayForDate(date), loadHistory(), loadUserSettings(), loadGoalPeriods()]);
     if (token !== loadToken) return; // a newer load has since started — discard this one
     state.dayRow = dayData.dayRow;
     state.meals = dayData.meals;
@@ -1120,22 +1184,30 @@ function saveSettingsFromInputs(){
     sugar: num('settingsPresetSugar', state.proteinPreset.sugar),
   };
   state.settingsSaving = true; state.settingsError = null; render();
-  saveUserSettings({ goals: nextGoals, proteinPreset: nextPreset, theme: state.themePreference }).then(() => {
-    state.goals = nextGoals;
-    state.proteinPreset = nextPreset;
-    state.settingsSaving = false;
-    state.settingsSaved = true;
-    render();
-    setTimeout(() => {
-      state.settingsSaved = false;
-      state.settingsOpen = false; // auto-close so the updated header/rings are visible
+  // Dual write: user_settings (current goals + sodium/sugar, unchanged) then
+  // goal_periods (dated history for calories/protein/water), then reload the
+  // in-memory periods so goalsFor -- and therefore history/streaks -- reflect
+  // the change immediately without a page reload.
+  saveUserSettings({ goals: nextGoals, proteinPreset: nextPreset, theme: state.themePreference })
+    .then(() => saveGoalPeriod(nextGoals))
+    .then(() => loadGoalPeriods())
+    .then(() => {
+      state.goals = nextGoals;
+      state.proteinPreset = nextPreset;
+      state.settingsSaving = false;
+      state.settingsSaved = true;
       render();
-    }, 1500);
-  }).catch((err) => {
-    state.settingsSaving = false;
-    state.settingsError = 'Could not save settings: ' + (err && err.message ? err.message : 'Something went wrong.');
-    render();
-  });
+      refreshStreak(); // recompute streaks against the now-updated dated goals
+      setTimeout(() => {
+        state.settingsSaved = false;
+        state.settingsOpen = false; // auto-close so the updated header/rings are visible
+        render();
+      }, 1500);
+    }).catch((err) => {
+      state.settingsSaving = false;
+      state.settingsError = 'Could not save settings: ' + (err && err.message ? err.message : 'Something went wrong.');
+      render();
+    });
 }
 
 function startEditMeal(id){
@@ -1588,8 +1660,10 @@ function renderDashboard(){
   const weight = state.dayRow && state.dayRow.weight != null ? state.dayRow.weight : '';
   // Goals for the day currently on screen — every ring/status/header element
   // below describes state.selectedDate (which may be a past day, not today),
-  // so they all read through this rather than state.goals directly. See
-  // goalsFor's comment for why this is a no-op today.
+  // so they all read through goalsFor rather than state.goals directly, and
+  // therefore show the goals that were actually in effect on that day. Reads
+  // goals.sodium/goals.sugar further down, which goalsFor preserves from the
+  // global goals (goal_periods only overlays calories/protein/water).
   const goals = goalsFor(state.selectedDate);
   const calOver = totals.calories > goals.calories;
   // Plain status line replacing the old "OVER CAP" badge — matches the water

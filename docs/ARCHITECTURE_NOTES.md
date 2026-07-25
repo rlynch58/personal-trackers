@@ -138,16 +138,57 @@ a pass; it's the one case that isn't even given to the hit-test function,
 it's checked and rejected first.
 
 Goals are looked up per day through a `goalsFor(dateKey)` function rather
-than reading a single global goals value directly. Right now `goalsFor` is
-a deliberate no-op — it ignores the date it's given and always returns the
-current global goals, because per-day/dated goal history doesn't exist yet.
-It's wired this way on purpose: every streak/history calculation already
-asks "what were the goals *as of this date*" instead of "what are the goals
-right now," so the moment dated goal storage exists, streak and history
-calculations become historically correct automatically, with no call sites
-to hunt down and change. Until then, this is a known, intentional gap — not
-a bug — and it means historical days are technically scored against
-*today's* goals rather than whatever goals were in effect at the time.
+than reading a single global goals value directly. Every streak/history
+calculation asks "what were the goals *as of this date*" instead of "what
+are the goals right now," so historical days are scored against the goals
+that were actually in effect at the time, not today's.
+
+`goalsFor` resolves this against a `goal_periods` table — one row per goal
+change ever, each with an `effective_date` and the three dated metrics
+(calories, protein, water). For a given date it finds the row with the
+**greatest `effective_date` that is still `<= the requested date`**: the
+most recent goal change at or before that day. The rows are held in memory
+sorted ascending and loaded once per data refresh (a small, bounded set —
+never fetched per-day or per-render).
+
+The return shape is a **merge, and deliberately never narrows**:
+`goal_periods` only stores calories/protein/water, but the rest of the app
+still reads `sodium` and `sugar` off the result of `goalsFor` (the
+dashboard's sodium/sugar line does). So `goalsFor` returns the global goals
+object with only calories/protein/water overlaid from the matched period —
+sodium and sugar pass straight through from the global goals untouched.
+
+Fallback chain, so it can never return `undefined` or a partial object: if
+no period's `effective_date` is on or before the requested date (a date
+earlier than the oldest goal record — shouldn't happen given the backfill,
+but guarded), it falls back to the *earliest* period row; if there are no
+period rows at all, it returns the global goals directly.
+
+The `goal_periods` table was backfilled on creation with one row per user,
+dated to that user's earliest tracked day and populated from their current
+goals — so all pre-existing history resolves correctly rather than falling
+into a gap.
+
+**Dual-write, on purpose.** Saving goals in settings writes to *two* places
+and this is intentional, not redundancy to clean up. `user_settings`
+(JSONB) stays the single source of truth for the *current* goals and is the
+only place `sodium` and `sugar` live at all. `goal_periods` is purely the
+*historical* record for the three dated metrics: a save upserts a row dated
+to today's local calendar date (on conflict with an existing same-day row it
+updates it, so several edits in one day collapse to one period rather than
+erroring). After a save the in-memory period list is reloaded and streaks
+recomputed, so history and streaks reflect the new goals without a page
+reload.
+
+**Known edge — the two writes aren't transactional.** If the `user_settings`
+write succeeds but the `goal_periods` upsert then fails, the two can diverge
+for that day: current goals update but the dated history for today doesn't.
+This is self-announcing (the save surfaces an error in the banner rather
+than silently claiming success) and self-healing (saving again re-attempts
+both writes). It's deliberately *not* wrapped in a database transaction —
+the divergence window is one day, fully recoverable, and the app is headed
+for a native rewrite that makes hardening this specific web-code path not
+worth the complexity. See §10.
 
 ## 6. History card calorie coloring (v1.36)
 
@@ -201,25 +242,10 @@ that day."
 
 ## 9. Known gaps and tech debt
 
-- **Dated goal storage doesn't exist yet** — `goalsFor(dateKey)` is a
-  no-op that always returns today's global goals regardless of the date
-  passed in. Why it matters: any day in the History list or streak
-  calculation is technically scored against *current* goals, not whatever
-  goals were actually in effect on that historical date — so the display
-  becomes quietly incorrect for past days after any goal change, until
-  dated goal storage lands.
 - **`user_settings` stores goals/preset/theme as a single JSONB blob**
   rather than typed columns. Why it matters: there's no schema-level
   validation or querying on individual settings fields — malformed or
   partial JSON silently falls back to defaults rather than failing loudly.
-- **No UPDATE policy appears to exist on the `meals` table** — this is an
-  open question, not a confirmed bug: the client code does call `.update()`
-  on `meals` for both meal edits and meal-date moves, and neither path has
-  any special handling that suggests it's known to be broken. Why it
-  matters: if there's genuinely no UPDATE policy at the database level,
-  both of those features would fail via a permissions error on every use —
-  worth confirming directly against the database policies before trusting
-  that either feature actually persists changes.
 - **Robustness punch-list** (not urgent, but real):
   - `cssVar()` reads a CSS custom property via `getComputedStyle(...).getPropertyValue(...)`,
     which does **not** resolve a variable whose own value is another
