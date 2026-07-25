@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.30';
+const APP_VERSION = '1.31';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -243,6 +243,7 @@ const state = {
   weightRange: '30',
   weightSeries: [],
   weightSeriesLoading: false,
+  currentStreak: null, // null until the first computeCurrentStreak() has run -- see loadStreakData/refreshStreak
   settingsOpen: false,
   settingsSaving: false,
   settingsSaved: false,
@@ -264,6 +265,7 @@ let weightChartInstance = null;
 const pendingUndoMeals = new Map(); // id -> { meal, timer } for meals deleted but still within the undo window
 let loadToken = 0; // bumped on every day-load request; stale responses are discarded
 let weightSeriesToken = 0; // bumped on every weight-range fetch; stale responses are discarded
+let streakToken = 0; // bumped on every streak refresh; stale responses are discarded
 
 // ---------- Theme ----------
 // Applied synchronously below, before any auth/render listeners are wired up,
@@ -491,6 +493,47 @@ async function loadWeightSeries(rangeKey){
   return (data || []).map(r => ({ date: r.log_date, weight: r.weight }));
 }
 
+// Decoupled from loadHistory's 45-day window for the same reason
+// loadWeightSeries is: a real consecutive-day streak needs to look arbitrarily
+// far back, and loadHistory's 45-day cap would silently truncate any streak
+// longer than that. Protein lives on `meals`, not `health_logs` (health_logs
+// only has weight/water), so this queries meals for just log_date/protein --
+// no other columns, no calorie/water/sodium/sugar totals -- and sums
+// client-side, same aggregation loadHistory already does for its window but
+// with no lower bound on date here.
+async function loadStreakData(){
+  const userId = state.session.user.id;
+  const { data, error } = await supabaseClient.from('meals')
+    .select('log_date, protein').eq('user_id', userId).order('log_date', { ascending: false });
+  if (error) throw error;
+  const proteinByDate = {};
+  (data || []).forEach(m => {
+    proteinByDate[m.log_date] = (proteinByDate[m.log_date] || 0) + (Number(m.protein) || 0);
+  });
+  return proteinByDate;
+}
+
+// Counts backward from `anchorKey` (inclusive) through unbroken days where
+// logged protein met that day's goal, stopping at the first miss or the
+// first day with nothing logged at all (undefined in proteinByDate --
+// treated the same as a miss, since a gap can't be assumed to be a hit).
+// Anchored on today rather than state.selectedDate: "current streak" is a
+// today-relative concept, same reasoning renderDashboard's pace block uses
+// goalsFor(todayKey()) instead of the selected-day goals.
+function computeCurrentStreak(proteinByDate, goalProtein, anchorKey){
+  if (!goalProtein || goalProtein <= 0) return 0;
+  let streak = 0;
+  let cursor = parseDateKey(anchorKey);
+  while (true) {
+    const key = dateKey(cursor);
+    const protein = proteinByDate[key];
+    if (protein == null || protein < goalProtein) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
 async function loadUserSettings(){
   const userId = state.session.user.id;
   const { data, error } = await supabaseClient.from('user_settings').select('settings').eq('user_id', userId).maybeSingle();
@@ -520,6 +563,7 @@ async function refreshAll(){
   const date = state.selectedDate;
   const token = ++loadToken;
   refreshWeightSeries(); // independent of the day/history/settings load above — own failure domain, own token
+  refreshStreak(); // same independence — own failure domain, own token, see loadStreakData's comment
   try {
     const [dayData] = await Promise.all([loadDayForDate(date), loadHistory(), loadUserSettings()]);
     if (token !== loadToken) return; // a newer load has since started — discard this one
@@ -550,6 +594,22 @@ function refreshWeightSeries(){
     state.weightSeriesLoading = false;
     state.loadError = 'Could not load weight trend: ' + (err && err.message ? err.message : 'Something went wrong.');
     render();
+  });
+}
+
+// Data-layer only for now -- no UI reads state.currentStreak yet. The
+// console.log is a deliberate, temporary stand-in for that missing UI so the
+// computed number can be sanity-checked against real data before anything
+// gets built to display it; remove once a real streak display ships.
+function refreshStreak(){
+  const token = ++streakToken;
+  return loadStreakData().then((proteinByDate) => {
+    if (token !== streakToken) return; // superseded by a newer refresh — discard
+    state.currentStreak = computeCurrentStreak(proteinByDate, goalsFor(todayKey()).protein, todayKey());
+    console.log('[streak] currentStreak =', state.currentStreak); // TEMP -- remove once a UI exists
+  }).catch((err) => {
+    if (token !== streakToken) return;
+    console.error('Could not compute streak:', err);
   });
 }
 
