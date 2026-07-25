@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.34';
+const APP_VERSION = '1.35';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -540,13 +540,40 @@ async function loadStreakData(){
 }
 
 // hitFn(value, goal) decides what "met the goal that day" means for a given
-// metric -- protein/water want value >= goal, calories (a cap, not a floor)
-// wants value <= goal. Kept as an explicit parameter rather than hardcoding
-// ">=" so a day with nothing logged at all can't accidentally read as a
-// calories-cap "hit" (0 <= almost any cap is trivially true) -- see the gap
-// check below, which runs before hitFn ever sees the value.
+// metric -- protein/water want value >= goal. Kept as an explicit parameter
+// rather than hardcoding ">=" so a day with nothing logged at all can't
+// accidentally read as a hit -- see the gap check below, which runs before
+// hitFn ever sees the value.
 const HIT_AT_LEAST = (value, goal) => value >= goal; // protein, water
-const HIT_AT_MOST = (value, goal) => value <= goal;  // calories
+
+// The calorie goal is a target to land NEAR, not a ceiling to stay under.
+// Eating well under it is as much a miss as going over -- the goal is
+// already a low target -- so calories use a symmetric band instead of a
+// one-sided cap. The lower edge doubles as the untracked-day guard the old
+// <= rule relied on: a day with little or no logging falls below it and
+// correctly fails. The goal > 0 check keeps a null or zero goal from
+// producing a nonsense band.
+const CALORIE_STREAK_TOLERANCE = 0.10; // calories count if within +/-10% of goal
+const HIT_CALORIE_BAND = (value, goal) => goal > 0
+  && value >= goal * (1 - CALORIE_STREAK_TOLERANCE)
+  && value <= goal * (1 + CALORIE_STREAK_TOLERANCE);
+
+// Per-day status strings, independent of the streak integer -- used only
+// for display/verification (see refreshStreak's console.table) and never
+// consulted by computeStreak's walk.
+function proteinWaterStatus(value, goal){
+  if (value == null) return 'nolog';
+  return value >= goal ? 'hit' : 'miss';
+}
+function calorieStatus(value, goal){
+  if (value == null) return 'nolog';
+  if (!(goal > 0)) return 'under';
+  const low = goal * (1 - CALORIE_STREAK_TOLERANCE);
+  const high = goal * (1 + CALORIE_STREAK_TOLERANCE);
+  if (value < low) return 'under';
+  if (value > high) return 'over';
+  return 'hit';
+}
 
 // Counts backward from the day before `anchorKey` through unbroken days
 // where dataByDate satisfied hitFn against that day's goal, stopping at the
@@ -557,13 +584,15 @@ const HIT_AT_MOST = (value, goal) => value <= goal;  // calories
 // reasoning renderDashboard's pace block uses goalsFor(todayKey()) instead
 // of the selected-day goals.
 //
-// anchorKey (today) is deliberately excluded from that backward walk and
-// handled separately: today is still in progress, so it's "pending" rather
-// than a break. If today already satisfies hitFn, it's folded into the
-// count (+1). If it doesn't yet -- or has nothing logged yet, same thing --
-// the streak still reads as the unbroken run through yesterday, not 0;
-// today just hasn't joined it yet.
-function computeStreak(dataByDate, goal, anchorKey, hitFn){
+// anchorKey (today) is normally folded into the count (+1) if it already
+// satisfies hitFn, since today is still in progress and "pending" rather
+// than a break -- protein/water rely on this. alwaysPendingToday overrides
+// that for calories: the band means a partial day can look like a momentary
+// hit mid-day and drift back out as more gets logged, so today's total is
+// never evaluated against the band until the day is closed. Either way the
+// streak still reads as the unbroken run through yesterday, not 0; today
+// just hasn't joined it yet.
+function computeStreak(dataByDate, goal, anchorKey, hitFn, alwaysPendingToday){
   if (goal == null || goal <= 0) return 0;
   let streak = 0;
   let cursor = parseDateKey(anchorKey);
@@ -575,8 +604,10 @@ function computeStreak(dataByDate, goal, anchorKey, hitFn){
     streak++;
     cursor.setDate(cursor.getDate() - 1);
   }
-  const todaysValue = dataByDate[anchorKey];
-  if (todaysValue != null && hitFn(todaysValue, goal)) streak++;
+  if (!alwaysPendingToday) {
+    const todaysValue = dataByDate[anchorKey];
+    if (todaysValue != null && hitFn(todaysValue, goal)) streak++;
+  }
   return streak;
 }
 
@@ -643,6 +674,34 @@ function refreshWeightSeries(){
   });
 }
 
+// Console-only, last-30-day status table for manual verification of the
+// calorie band and today-pending rules -- always the trailing 30 calendar
+// days regardless of where any streak actually breaks, so all three
+// metrics can be eyeballed side by side no matter how short a streak is.
+// Independent of computeStreak's walk; never touches the streak integers.
+function buildStreakDaysTable(proteinByDate, caloriesByDate, waterByDate, numDays){
+  const goals = goalsFor(todayKey());
+  const rows = [];
+  let cursor = parseDateKey(todayKey());
+  for (let i = 0; i < numDays; i++) {
+    const key = dateKey(cursor);
+    const proteinValue = proteinByDate[key] != null ? proteinByDate[key] : null;
+    const caloriesValue = caloriesByDate[key] != null ? caloriesByDate[key] : null;
+    const waterValue = waterByDate[key] != null ? waterByDate[key] : null;
+    rows.push({
+      date: key,
+      protein: proteinValue, proteinGoal: goals.protein, proteinStatus: proteinWaterStatus(proteinValue, goals.protein),
+      calories: caloriesValue, caloriesGoal: goals.calories,
+      calLow: goals.calories > 0 ? round(goals.calories * (1 - CALORIE_STREAK_TOLERANCE)) : null,
+      calHigh: goals.calories > 0 ? round(goals.calories * (1 + CALORIE_STREAK_TOLERANCE)) : null,
+      caloriesStatus: calorieStatus(caloriesValue, goals.calories),
+      water: waterValue, waterGoal: goals.water, waterStatus: proteinWaterStatus(waterValue, goals.water),
+    });
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return rows;
+}
+
 // Data-layer only for now -- no UI reads state.streaks yet. The console.log
 // is a deliberate, temporary stand-in for that missing UI so all three
 // numbers can be sanity-checked against real data before anything gets
@@ -654,10 +713,14 @@ function refreshStreak(){
     const todaysGoals = goalsFor(todayKey());
     state.streaks = {
       protein: computeStreak(proteinByDate, todaysGoals.protein, todayKey(), HIT_AT_LEAST),
-      calories: computeStreak(caloriesByDate, todaysGoals.calories, todayKey(), HIT_AT_MOST),
+      calories: computeStreak(caloriesByDate, todaysGoals.calories, todayKey(), HIT_CALORIE_BAND, true),
       water: computeStreak(waterByDate, todaysGoals.water, todayKey(), HIT_AT_LEAST),
+      days: buildStreakDaysTable(proteinByDate, caloriesByDate, waterByDate, 30),
     };
-    console.log('[streaks]', state.streaks); // TEMP -- remove once a UI exists
+    // TEMP -- remove once a UI exists. Ints first (what state.streaks always
+    // exposed), then the 30-day table added by the calorie-band patch.
+    console.log('[streaks]', { protein: state.streaks.protein, calories: state.streaks.calories, water: state.streaks.water });
+    console.table(state.streaks.days);
   }).catch((err) => {
     if (token !== streakToken) return;
     console.error('Could not compute streaks:', err);
