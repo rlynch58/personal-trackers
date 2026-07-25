@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.32';
+const APP_VERSION = '1.33';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -607,16 +607,12 @@ function refreshWeightSeries(){
   });
 }
 
-// Data-layer only for now -- no UI reads state.currentStreak yet. The
-// console.log is a deliberate, temporary stand-in for that missing UI so the
-// computed number can be sanity-checked against real data before anything
-// gets built to display it; remove once a real streak display ships.
+// Data-layer only for now -- no UI reads state.currentStreak yet.
 function refreshStreak(){
   const token = ++streakToken;
   return loadStreakData().then((proteinByDate) => {
     if (token !== streakToken) return; // superseded by a newer refresh — discard
     state.currentStreak = computeCurrentStreak(proteinByDate, goalsFor(todayKey()).protein, todayKey());
-    console.log('[streak] currentStreak =', state.currentStreak); // TEMP -- remove once a UI exists
   }).catch((err) => {
     if (token !== streakToken) return;
     console.error('Could not compute streak:', err);
@@ -1082,6 +1078,18 @@ function resetMealInputs(){
   render();
 }
 
+// The edge function call has no timeout of its own, so a hung request would
+// otherwise leave "Estimating…" disabled indefinitely. runEstimate races it
+// against a plain timer instead. There's no separate Retry button; the
+// message on timeout just makes clear that tapping "Estimate nutrition"
+// again (now re-enabled) is the retry path. estimateToken guards against a
+// slow first attempt's timeout resolving after a second attempt has already
+// started (only reachable once the first attempt's own timeout already
+// fired and re-enabled the button, since it stays disabled while
+// state.estimating is true).
+const ESTIMATE_TIMEOUT_MS = 18000;
+let estimateToken = 0;
+
 async function runEstimate(){
   let body;
   if (state.mealMode === 'text') {
@@ -1093,10 +1101,26 @@ async function runEstimate(){
     body = { mode: 'photo', base64: state.photo.base64, mediaType: state.photo.mediaType, note: (state.photoNote || '').trim() };
   }
 
+  const token = ++estimateToken;
   state.estimating = true; state.estimateError = null; state.pendingMeal = null;
   render();
+
+  let timeoutId = null;
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve({ timedOut: true }), ESTIMATE_TIMEOUT_MS);
+  });
+  const invoke = supabaseClient.functions.invoke(FN_NAME, { body }).then((r) => ({ ...r, timedOut: false }));
+
   try {
-    const { data, error } = await supabaseClient.functions.invoke(FN_NAME, { body });
+    const result = await Promise.race([invoke, timeout]);
+    clearTimeout(timeoutId);
+    if (token !== estimateToken) return; // a newer attempt has since started — discard this one
+
+    if (result.timedOut) {
+      state.estimateError = "This is taking longer than expected — check your connection and tap Estimate nutrition to try again.";
+      return;
+    }
+    const { data, error } = result;
     if (error) throw error;
     if (data && data.error) throw new Error(data.error);
     state.pendingMeal = {
@@ -1105,10 +1129,10 @@ async function runEstimate(){
       sodium: round(data.sodium_mg), sugar: round(data.sugar_g),
     };
   } catch (e) {
+    if (token !== estimateToken) return;
     state.estimateError = "Couldn't estimate that one — try rephrasing, a clearer photo, or enter the numbers yourself below.";
   } finally {
-    state.estimating = false;
-    render();
+    if (token === estimateToken) { state.estimating = false; render(); }
   }
 }
 
@@ -1529,8 +1553,8 @@ function renderDashboard(){
         <div class="muted" style="font-size:13px; margin-top:2px;">${goals.protein}g protein goal · ${goals.calories} cal cap · ${goals.water}oz water</div>
       </div>
       <div class="row" style="gap:8px; flex-shrink:0;">
-        <button id="settingsBtn" title="Settings" style="width:36px; height:36px; border:1px solid var(--gear-border); border-radius:8px; background:var(--gear-bg); color:var(--gear-fg); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">⚙</button>
-        <button id="refreshBtn" title="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--sage-fill); color:var(--action-text); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
+        <button id="settingsBtn" title="Settings" aria-label="Settings" style="width:36px; height:36px; border:1px solid var(--gear-border); border-radius:8px; background:var(--gear-bg); color:var(--gear-fg); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">⚙</button>
+        <button id="refreshBtn" title="Refresh data" aria-label="Refresh data" style="width:36px; height:36px; border:none; border-radius:8px; background:var(--sage-fill); color:var(--action-text); font-size:1.3rem; display:flex; align-items:center; justify-content:center; padding:0;">↻</button>
         <button id="signOutBtn" style="border:none; background:var(--sage-fill); color:var(--action-text); height:36px; padding:0 14px; border-radius:10px; font-weight:600; display:flex; align-items:center; justify-content:center; white-space:nowrap;">Sign out</button>
       </div>
     </div>
@@ -1730,7 +1754,7 @@ function renderDashboard(){
                  <button class="cancel-move-btn" style="padding:5px 10px; font-size:12px; border:none;">Cancel</button>`
               : `<button class="edit-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Edit</button>
                  <button class="move-meal-btn" data-id="${m.id}" style="border:none; padding:2px 6px; font-size:12px; color:var(--blue); font-weight:600;">Move</button>
-                 <button class="delete-meal-btn" data-id="${m.id}" style="border:none; padding:2px;">✕</button>`}
+                 <button class="delete-meal-btn" data-id="${m.id}" aria-label="Delete ${escapeHtml(m.name)}" style="border:none; padding:2px;">✕</button>`}
           </div>
           `}
         </div>`).join('') : ''}
@@ -1812,7 +1836,7 @@ function renderDashboard(){
           ${sortedHistory.slice(0,21).map(d => {
             const dayGoals = goalsFor(d.date);
             return `
-            <div class="day-row" data-date="${d.date}" style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; background:${d.date===state.selectedDate?'var(--accent-tint)':'var(--surface)'}; border:1px solid ${d.date===state.selectedDate?'var(--accent)':'var(--border)'}; border-radius:14px; padding:14px 18px; margin-bottom:10px;">
+            <div class="day-row" data-date="${d.date}" role="button" tabindex="0" aria-label="View ${escapeHtml(prettyDate(d.date))}" style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; background:${d.date===state.selectedDate?'var(--accent-tint)':'var(--surface)'}; border:1px solid ${d.date===state.selectedDate?'var(--accent)':'var(--border)'}; border-radius:14px; padding:14px 18px; margin-bottom:10px;">
               <div class="row" style="gap:12px;">
                 ${dayBadge(d, 28, d.date)}
                 <div style="font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:16px;">${prettyDate(d.date)}</div>
@@ -1863,7 +1887,15 @@ function renderDashboard(){
     refreshAll();
   });
   document.getElementById('dateInput').addEventListener('change', (e) => setSelectedDate(e.target.value));
-  document.getElementById('weightInput').addEventListener('blur', commitWeightFromInput);
+  const weightInputEl = document.getElementById('weightInput');
+  weightInputEl.addEventListener('blur', commitWeightFromInput);
+  // Enter commits immediately rather than waiting for blur -- blur() below
+  // triggers the listener just registered above, so this doesn't also call
+  // commitWeightFromInput() directly (which would double-save on browsers
+  // that also blur the field after Enter).
+  weightInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); weightInputEl.blur(); }
+  });
   document.getElementById('saveWeightBtn').addEventListener('click', commitWeightFromInput);
 
   // Pills are inserted before the row's existing first child (the Custom
@@ -1953,6 +1985,11 @@ function renderDashboard(){
   });
   document.querySelectorAll('.day-row').forEach(row => {
     row.addEventListener('click', () => setSelectedDate(row.getAttribute('data-date')));
+    // role="button" doesn't get native Enter/Space activation the way a real
+    // <button> would, so it's wired up explicitly here.
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedDate(row.getAttribute('data-date')); }
+    });
   });
   document.querySelectorAll('.weight-range-btn').forEach(btn => {
     btn.addEventListener('click', () => setWeightRange(btn.getAttribute('data-range')));
