@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.36';
+const APP_VERSION = '1.37';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1919,7 +1919,14 @@ function renderDashboard(){
       <div class="muted" style="font-size:11px; margin-bottom:4px; font-weight:600; letter-spacing:.03em;">WEIGHT CHANGE</div>
       ${weightChangeHtml}
 
-      <div class="muted" style="font-size:12px; margin-top:14px; border-top:1px dashed var(--border); padding-top:10px;">Logged ${week.loggedDaysCount} of 7 days · ${week.totalMealsCount} meal${week.totalMealsCount===1?'':'s'}</div>
+      <div class="between" style="margin-top:14px; border-top:1px dashed var(--border); padding-top:10px; gap:10px;">
+        <div class="muted" style="font-size:12px;">Logged ${week.loggedDaysCount} of 7 days · ${week.totalMealsCount} meal${week.totalMealsCount===1?'':'s'}</div>
+        <div class="row" style="gap:12px; flex-wrap:nowrap;">
+          <span class="mono" title="Calories streak" aria-label="Calories streak: ${state.streaks.calories != null ? state.streaks.calories : 0} days" style="font-size:14px; font-weight:600; color:var(--ink);">🎯 ${state.streaks.calories != null ? state.streaks.calories : '—'}</span>
+          <span class="mono" title="Protein streak" aria-label="Protein streak: ${state.streaks.protein != null ? state.streaks.protein : 0} days" style="font-size:14px; font-weight:600; color:var(--ink);">🥩 ${state.streaks.protein != null ? state.streaks.protein : '—'}</span>
+          <span class="mono" title="Water streak" aria-label="Water streak: ${state.streaks.water != null ? state.streaks.water : 0} days" style="font-size:14px; font-weight:600; color:var(--ink);">💧 ${state.streaks.water != null ? state.streaks.water : '—'}</span>
+        </div>
+      </div>
     </div>
 
     <div class="card">
