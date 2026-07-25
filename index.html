@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.39';
+const APP_VERSION = '1.40';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -196,6 +196,26 @@ const PROTEIN_PACE_ESCALATION_G = 30;
 const WATER_PACE_TOLERANCE_OZ = 5;
 const WATER_PACE_ESCALATION_OZ = 16;
 const WATER_BOTTLE_OZ = 16;
+
+// Upper bounds for numeric inputs — generous ceilings meant only to catch an
+// accidental extra digit or a fat-fingered entry, not tight clinical limits.
+// GOAL constants bound the daily-goal fields in Settings; ENTRY constants
+// bound a single meal/preset's numbers (pending-meal form, meal edit form,
+// quick-add preset editor). Sodium shares one bound across both contexts —
+// a single very salty meal and a full day's worth are the same order of
+// magnitude, unlike calories/protein/carbs/fat/sugar.
+const MAX_CALORIES_GOAL = 10000;
+const MAX_CALORIES_ENTRY = 5000;
+const MAX_PROTEIN_GOAL = 400;
+const MAX_PROTEIN_ENTRY = 300;
+const MAX_CARBS_ENTRY = 500;
+const MAX_FAT_ENTRY = 300;
+const MAX_SODIUM = 10000;
+const MAX_SUGAR_GOAL = 500;
+const MAX_SUGAR_ENTRY = 300;
+const MAX_WATER_GOAL = 300;
+const MAX_WATER_ENTRY = 200;
+const MAX_WEIGHT_LBS = 1000;
 
 const supabaseClient = supabase.createClient(SUPA_URL, SUPA_ANON_KEY, {
   auth: {
@@ -250,6 +270,11 @@ const state = {
   weightRange: '30',
   weightSeries: [],
   weightSeriesLoading: false,
+  // Dedicated slot for loadWeightSeries failures — kept separate from the
+  // shared loadError so the Weight trend card's own error message never gets
+  // ambiguous with the ~11 unrelated flows (meal save/delete/move, day load,
+  // etc.) that still share loadError. See refreshWeightSeries.
+  weightFetchError: null,
   // Each null until the first computeStreak() has run for it -- see
   // loadStreakData/refreshStreak. Grouped in one object (rather than three
   // top-level state fields) since they're always loaded/consumed together
@@ -398,8 +423,19 @@ function clampPct(n){ return Math.max(0, Math.min(100, n)); }
 // Chart.js can't consume `var(--token)` strings directly (unlike inline SVG
 // style attributes, which resolve CSS custom properties natively) — colors
 // must be resolved to a concrete value at chart-build time instead.
+// getComputedStyle().getPropertyValue() does NOT substitute var() references
+// inside a custom property's own value — a token like `--sage-fill: var(--lime)`
+// comes back as the literal string "var(--lime)", not the resolved color. That
+// only matters here (inline style="color:var(--x)" resolves live in the
+// renderer regardless), since this is the one place a custom property's value
+// is read back out as a plain JS string. Recurse through any var() wrapper
+// (with fallback support) until a concrete value is left.
 function cssVar(name){
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const varMatch = raw.match(/^var\(\s*(--[A-Za-z0-9-]+)\s*(?:,\s*([\s\S]+))?\)$/);
+  if (!varMatch) return raw;
+  const resolved = cssVar(varMatch[1]);
+  return resolved || (varMatch[2] || '').trim();
 }
 // Downscales to at most maxDim on the longest side and re-encodes as JPEG
 // before it ever reaches the estimate call — a raw phone photo can be several
@@ -707,16 +743,18 @@ function refreshWeightSeries(){
   const rangeKey = state.weightRange;
   const token = ++weightSeriesToken;
   state.weightSeriesLoading = true;
+  state.weightFetchError = null; // clear any stale error from a previous attempt while this one is in flight
   render();
   return loadWeightSeries(rangeKey).then((series) => {
     if (token !== weightSeriesToken) return; // range changed again before this resolved — discard
     state.weightSeries = series;
     state.weightSeriesLoading = false;
+    state.weightFetchError = null;
     render();
   }).catch((err) => {
     if (token !== weightSeriesToken) return;
     state.weightSeriesLoading = false;
-    state.loadError = 'Could not load weight trend: ' + (err && err.message ? err.message : 'Something went wrong.');
+    state.weightFetchError = "Couldn't load your weight trend — check your connection and try again.";
     render();
   });
 }
@@ -1366,7 +1404,62 @@ async function handleForgotPassword(){
   }
 }
 
+// Wipes every piece of the previous user's in-memory data before the next
+// sign-in can start loading a new user's — otherwise a quick sign-out/back-in
+// (or switching accounts on a shared browser) would briefly render the old
+// user's meals/history/goals/streaks under the new session, and a pending
+// undo timer could re-insert an old user's "deleted" meal into the new
+// user's log. session/authMode/authError/authBusy/themePreference are left
+// alone: session is about to be overwritten by onAuthStateChange, the auth-*
+// fields belong to the sign-in form about to show, and themePreference is a
+// device preference, not user data.
+function resetLocalState(){
+  clearTimeout(window.__waterUndoTimer);
+  pendingUndoMeals.forEach(({ timer }) => clearTimeout(timer));
+  pendingUndoMeals.clear();
+  if (state.photo && state.photo.previewUrl) URL.revokeObjectURL(state.photo.previewUrl);
+  // Bump every token so a still-in-flight request from the old session can
+  // never land its data into the fresh state below after it resolves.
+  loadToken++; weightSeriesToken++; streakToken++; estimateToken++;
+  Object.assign(state, {
+    selectedDate: todayKey(),
+    followingToday: true,
+    dayRow: null,
+    meals: [],
+    dayLoaded: false,
+    history: [],
+    mealMode: 'text',
+    mealTextValue: '',
+    pendingMeal: null,
+    movingMealId: null,
+    estimating: false,
+    estimateError: null,
+    photo: null,
+    photoNote: '',
+    loadError: null,
+    weightJustSaved: false,
+    lastWaterUndo: null,
+    recentMeals: null,
+    recentMealsOpen: false,
+    recentMealsLoading: false,
+    editingMealId: null,
+    goals: { ...DEFAULT_GOALS },
+    goalPeriods: [],
+    proteinPreset: { ...DEFAULT_PROTEIN_PRESET },
+    weightRange: '30',
+    weightSeries: [],
+    weightSeriesLoading: false,
+    weightFetchError: null,
+    streaks: { protein: null, calories: null, water: null },
+    settingsOpen: false,
+    settingsSaving: false,
+    settingsSaved: false,
+    settingsError: null,
+  });
+}
+
 async function signOut(){
+  resetLocalState();
   await supabaseClient.auth.signOut();
 }
 
@@ -1611,14 +1704,22 @@ function renderDashboard(){
   // goals.sodium/goals.sugar further down, which goalsFor preserves from the
   // global goals (goal_periods only overlays calories/protein/water).
   const goals = goalsFor(state.selectedDate);
-  const calOver = totals.calories > goals.calories;
+  // Same zero-goal guard proteinGoalPct/waterGoalPct use below — an unset
+  // (0) calorie cap must never reach the ring as a live divisor: totals/0 is
+  // Infinity (clamps to a misleading "full" ring) or, with nothing logged
+  // yet, 0/0 is NaN (a broken stroke-dashoffset). goalSet gates the ring's
+  // fill, the over/under coloring, and the status line together so all three
+  // agree on the same neutral "no goal" state instead of drifting apart.
+  const calGoalSet = goals.calories > 0;
+  const calGoalPct = calGoalSet ? clampPct((totals.calories/goals.calories)*100) : 0;
+  const calOver = calGoalSet && totals.calories > goals.calories;
   // Plain status line replacing the old "OVER CAP" badge — matches the water
   // row's pattern. Reuses the exact same --coral token as the over-cap ring
   // stroke (no separate red). Under cap, we show "N left" rather than
   // omitting the line entirely, so the calories and water rows keep the same
   // two-line shape and don't make the card look lopsided.
   const calDelta = round(Math.abs(totals.calories - goals.calories));
-  const calStatusText = calOver ? `${calDelta} over` : `${calDelta} left`;
+  const calStatusText = !calGoalSet ? 'No goal set' : (calOver ? `${calDelta} over` : `${calDelta} left`);
   const calRingColor = calOver ? 'var(--coral)' : 'var(--accent)';
   const calTextColor = calOver ? 'var(--coral)' : null;
   const sortedHistory = [...state.history];
@@ -1698,11 +1799,11 @@ function renderDashboard(){
       ${state.settingsError ? `<div class="err">${escapeHtml(state.settingsError)}</div>` : ''}
       <div class="muted" style="font-size:12px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">DAILY GOALS</div>
       <div class="row" style="margin-bottom:16px;">
-        <div class="num-field"><label>Calories cap</label><input type="number" min="0" inputmode="decimal" id="settingsCalories" value="${state.goals.calories}"></div>
-        <div class="num-field"><label>Protein (g)</label><input type="number" min="0" inputmode="decimal" id="settingsProtein" value="${state.goals.protein}"></div>
-        <div class="num-field"><label>Water (oz)</label><input type="number" min="0" inputmode="decimal" id="settingsWater" value="${state.goals.water}"></div>
-        <div class="num-field"><label>Sodium (mg)</label><input type="number" min="0" inputmode="decimal" id="settingsSodium" value="${state.goals.sodium}"></div>
-        <div class="num-field"><label>Sugar (g)</label><input type="number" min="0" inputmode="decimal" id="settingsSugar" value="${state.goals.sugar}"></div>
+        <div class="num-field"><label>Calories cap</label><input type="number" min="0" max="${MAX_CALORIES_GOAL}" inputmode="decimal" id="settingsCalories" value="${state.goals.calories}"></div>
+        <div class="num-field"><label>Protein (g)</label><input type="number" min="0" max="${MAX_PROTEIN_GOAL}" inputmode="decimal" id="settingsProtein" value="${state.goals.protein}"></div>
+        <div class="num-field"><label>Water (oz)</label><input type="number" min="0" max="${MAX_WATER_GOAL}" inputmode="decimal" id="settingsWater" value="${state.goals.water}"></div>
+        <div class="num-field"><label>Sodium (mg)</label><input type="number" min="0" max="${MAX_SODIUM}" inputmode="decimal" id="settingsSodium" value="${state.goals.sodium}"></div>
+        <div class="num-field"><label>Sugar (g)</label><input type="number" min="0" max="${MAX_SUGAR_GOAL}" inputmode="decimal" id="settingsSugar" value="${state.goals.sugar}"></div>
       </div>
       <div class="muted" style="font-size:12px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">APPEARANCE</div>
       <div class="row" style="margin-bottom:16px;">
@@ -1717,14 +1818,14 @@ function renderDashboard(){
       <div class="muted" style="font-size:12px; margin-bottom:6px; font-weight:600; letter-spacing:.03em;">QUICK-ADD PRESET</div>
       <input id="settingsPresetName" value="${escapeHtml(state.proteinPreset.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
       <div class="row" style="margin-bottom:10px;">
-        <div class="num-field"><label>Calories</label><input type="number" min="0" inputmode="decimal" id="settingsPresetCalories" value="${state.proteinPreset.calories}"></div>
-        <div class="num-field"><label>Protein (g)</label><input type="number" min="0" inputmode="decimal" id="settingsPresetProtein" value="${state.proteinPreset.protein}"></div>
-        <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" inputmode="decimal" id="settingsPresetCarbs" value="${state.proteinPreset.carbs}"></div>
-        <div class="num-field"><label>Fat (g)</label><input type="number" min="0" inputmode="decimal" id="settingsPresetFat" value="${state.proteinPreset.fat}"></div>
+        <div class="num-field"><label>Calories</label><input type="number" min="0" max="${MAX_CALORIES_ENTRY}" inputmode="decimal" id="settingsPresetCalories" value="${state.proteinPreset.calories}"></div>
+        <div class="num-field"><label>Protein (g)</label><input type="number" min="0" max="${MAX_PROTEIN_ENTRY}" inputmode="decimal" id="settingsPresetProtein" value="${state.proteinPreset.protein}"></div>
+        <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" max="${MAX_CARBS_ENTRY}" inputmode="decimal" id="settingsPresetCarbs" value="${state.proteinPreset.carbs}"></div>
+        <div class="num-field"><label>Fat (g)</label><input type="number" min="0" max="${MAX_FAT_ENTRY}" inputmode="decimal" id="settingsPresetFat" value="${state.proteinPreset.fat}"></div>
       </div>
       <div class="row" style="margin-bottom:16px;">
-        <div class="num-field"><label>Sodium (mg)</label><input type="number" min="0" inputmode="decimal" id="settingsPresetSodium" value="${state.proteinPreset.sodium}"></div>
-        <div class="num-field"><label>Sugar (g)</label><input type="number" min="0" inputmode="decimal" id="settingsPresetSugar" value="${state.proteinPreset.sugar}"></div>
+        <div class="num-field"><label>Sodium (mg)</label><input type="number" min="0" max="${MAX_SODIUM}" inputmode="decimal" id="settingsPresetSodium" value="${state.proteinPreset.sodium}"></div>
+        <div class="num-field"><label>Sugar (g)</label><input type="number" min="0" max="${MAX_SUGAR_ENTRY}" inputmode="decimal" id="settingsPresetSugar" value="${state.proteinPreset.sugar}"></div>
       </div>
       <div class="row">
         <button class="primary" id="saveSettingsBtn" ${state.settingsSaving ? 'disabled' : ''}>${state.settingsSaving ? 'Saving…' : 'Save settings'}</button>
@@ -1746,7 +1847,7 @@ function renderDashboard(){
       <div class="row" style="background:var(--bg); border-radius:12px; padding:12px 16px; margin-bottom:16px; justify-content:space-between;">
         <label for="weightInput" style="font-weight:600; font-size:14px;">Morning weight</label>
         <div class="row" style="gap:6px;">
-          <input id="weightInput" type="number" min="0" inputmode="decimal" step="0.1" placeholder="0.0" value="${weight}" style="width:100px; font-size:18px; padding:8px 10px;" class="mono">
+          <input id="weightInput" type="number" min="0" max="${MAX_WEIGHT_LBS}" inputmode="decimal" step="0.1" placeholder="0.0" value="${weight}" style="width:100px; font-size:18px; padding:8px 10px;" class="mono">
           <span class="muted" style="font-size:14px;">lbs</span>
           <button class="primary" id="saveWeightBtn" style="padding:8px 14px; font-size:14px;">Save</button>
           ${state.weightJustSaved ? `<span style="color:var(--sage); font-size:13px; font-weight:600;">✓ Saved</span>` : ''}
@@ -1760,7 +1861,7 @@ function renderDashboard(){
         </div>
         <div style="display:flex; flex-direction:column; gap:14px; min-width:0;">
           <div class="row" style="gap:6px; flex-wrap:nowrap;">
-            ${ring((totals.calories/goals.calories)*100, calRingColor, 'var(--ring-track)', totals.calories, '', '', goals.calories, calTextColor, true, 64, null, undefined, 18)}
+            ${ring(calGoalPct, calRingColor, 'var(--ring-track)', totals.calories, '', '', goals.calories, calTextColor, true, 64, null, undefined, 18)}
             <div style="min-width:0;">
               <div class="ring-label" style="white-space:nowrap;">Calories / ${goals.calories}</div>
               <div style="font-size:16px; font-weight:700; line-height:1.2; margin-top:2px; text-align:center; color:${calOver ? 'var(--coral)' : 'var(--ink)'};">${calStatusText}</div>
@@ -1777,7 +1878,7 @@ function renderDashboard(){
       </div>
 
       <div class="row center" style="margin-top:4px; gap:8px; flex-wrap:nowrap;" id="waterBtnRow">
-        <input id="customWaterInput" type="number" min="0" inputmode="decimal" placeholder="Custom" style="width:85px;" class="mono">
+        <input id="customWaterInput" type="number" min="0" max="${MAX_WATER_ENTRY}" inputmode="decimal" placeholder="Custom" style="width:85px;" class="mono">
         <span class="muted" style="font-size:13px;">oz</span>
         <button id="customWaterBtn" style="padding:7px 14px; font-size:13px;">Add</button>
       </div>
@@ -1835,14 +1936,14 @@ function renderDashboard(){
           <div class="muted" style="font-size:12px; margin-bottom:8px;">Check these before adding — estimates are approximate</div>
           <input id="pmName" value="${escapeHtml(state.pendingMeal.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
           <div class="row" style="margin-bottom:12px;">
-            <div class="num-field"><label>Calories</label><input type="number" min="0" inputmode="decimal" id="pmCalories" value="${state.pendingMeal.calories}"></div>
-            <div class="num-field"><label>Protein (g)</label><input type="number" min="0" inputmode="decimal" id="pmProtein" value="${state.pendingMeal.protein}"></div>
-            <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" inputmode="decimal" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
-            <div class="num-field"><label>Fat (g)</label><input type="number" min="0" inputmode="decimal" id="pmFat" value="${state.pendingMeal.fat}"></div>
+            <div class="num-field"><label>Calories</label><input type="number" min="0" max="${MAX_CALORIES_ENTRY}" inputmode="decimal" id="pmCalories" value="${state.pendingMeal.calories}"></div>
+            <div class="num-field"><label>Protein (g)</label><input type="number" min="0" max="${MAX_PROTEIN_ENTRY}" inputmode="decimal" id="pmProtein" value="${state.pendingMeal.protein}"></div>
+            <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" max="${MAX_CARBS_ENTRY}" inputmode="decimal" id="pmCarbs" value="${state.pendingMeal.carbs}"></div>
+            <div class="num-field"><label>Fat (g)</label><input type="number" min="0" max="${MAX_FAT_ENTRY}" inputmode="decimal" id="pmFat" value="${state.pendingMeal.fat}"></div>
           </div>
           <div class="row" style="margin-bottom:12px;">
-            <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" min="0" inputmode="decimal" id="pmSodium" value="${state.pendingMeal.sodium||0}"></div>
-            <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" min="0" inputmode="decimal" id="pmSugar" value="${state.pendingMeal.sugar||0}"></div>
+            <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" min="0" max="${MAX_SODIUM}" inputmode="decimal" id="pmSodium" value="${state.pendingMeal.sodium||0}"></div>
+            <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" min="0" max="${MAX_SUGAR_ENTRY}" inputmode="decimal" id="pmSugar" value="${state.pendingMeal.sugar||0}"></div>
           </div>
           <div class="row">
             <button class="primary" id="confirmMealBtn">+ Add to today's log</button>
@@ -1856,14 +1957,14 @@ function renderDashboard(){
             <div class="muted" style="font-size:11px; margin-bottom:8px;">Editing meal</div>
             <input class="edit-name" data-id="${m.id}" value="${escapeHtml(m.name)}" style="width:100%; font-weight:600; margin-bottom:10px;">
             <div class="row" style="margin-bottom:10px;">
-              <div class="num-field"><label>Calories</label><input type="number" min="0" inputmode="decimal" class="edit-calories" data-id="${m.id}" value="${m.calories}"></div>
-              <div class="num-field"><label>Protein (g)</label><input type="number" min="0" inputmode="decimal" class="edit-protein" data-id="${m.id}" value="${m.protein}"></div>
-              <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" inputmode="decimal" class="edit-carbs" data-id="${m.id}" value="${m.carbs}"></div>
-              <div class="num-field"><label>Fat (g)</label><input type="number" min="0" inputmode="decimal" class="edit-fat" data-id="${m.id}" value="${m.fat}"></div>
+              <div class="num-field"><label>Calories</label><input type="number" min="0" max="${MAX_CALORIES_ENTRY}" inputmode="decimal" class="edit-calories" data-id="${m.id}" value="${m.calories}"></div>
+              <div class="num-field"><label>Protein (g)</label><input type="number" min="0" max="${MAX_PROTEIN_ENTRY}" inputmode="decimal" class="edit-protein" data-id="${m.id}" value="${m.protein}"></div>
+              <div class="num-field"><label>Carbs (g)</label><input type="number" min="0" max="${MAX_CARBS_ENTRY}" inputmode="decimal" class="edit-carbs" data-id="${m.id}" value="${m.carbs}"></div>
+              <div class="num-field"><label>Fat (g)</label><input type="number" min="0" max="${MAX_FAT_ENTRY}" inputmode="decimal" class="edit-fat" data-id="${m.id}" value="${m.fat}"></div>
             </div>
             <div class="row" style="margin-bottom:10px;">
-              <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" min="0" inputmode="decimal" class="edit-sodium" data-id="${m.id}" value="${m.sodium||0}"></div>
-              <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" min="0" inputmode="decimal" class="edit-sugar" data-id="${m.id}" value="${m.sugar||0}"></div>
+              <div class="num-field"><label>Sodium (mg) · ballpark</label><input type="number" min="0" max="${MAX_SODIUM}" inputmode="decimal" class="edit-sodium" data-id="${m.id}" value="${m.sodium||0}"></div>
+              <div class="num-field"><label>Sugar (g) · ballpark</label><input type="number" min="0" max="${MAX_SUGAR_ENTRY}" inputmode="decimal" class="edit-sugar" data-id="${m.id}" value="${m.sugar||0}"></div>
             </div>
             <div class="row">
               <button class="primary save-edit-btn" data-id="${m.id}">Save changes</button>
@@ -1957,11 +2058,11 @@ function renderDashboard(){
       <div class="row" style="gap:8px; margin-bottom:14px;">
         ${WEIGHT_RANGE_OPTIONS.map(o => `<button class="mode-btn pill weight-range-btn ${state.weightRange===o.key?'active':''}" data-range="${o.key}" style="font-size:12px;">${o.label}</button>`).join('')}
       </div>
-      ${weightSeries.length > 1
+      ${state.weightFetchError ? `<div class="err">${escapeHtml(state.weightFetchError)}</div>` : (weightSeries.length > 1
         ? `<canvas id="weightChart" height="90"></canvas>`
         : `<div class="muted" style="font-size:13px;">${weightSeries.length === 1
             ? `Only one weigh-in in ${weightRangeOpt.phrase} — log a couple more mornings to see a trend line.`
-            : `No weight logged in ${weightRangeOpt.phrase} yet — log a morning weight to start a trend line.`}</div>`}
+            : `No weight logged in ${weightRangeOpt.phrase} yet — log a morning weight to start a trend line.`}</div>`)}
     </div>
 
     <div class="card">
