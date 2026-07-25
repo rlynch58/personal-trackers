@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.40';
+const APP_VERSION = '1.41';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -420,6 +420,15 @@ function resolveNearestWeight(anchorKey, historyMap, maxLookbackDays){
 }
 function round(n){ return Math.round((Number(n)||0)*10)/10; }
 function clampPct(n){ return Math.max(0, Math.min(100, n)); }
+// The MAX_* ceilings above only reach the DOM as the `max` attribute on
+// number inputs — that alone never stops a value from reaching state/the DB:
+// it just tweaks the spinner/keyboard-arrow behavior and native form
+// validation, neither of which fires here (these are plain buttons, no
+// <form> submit in play). Every save path that reads one of these fields
+// needs this explicit clamp alongside its MAX_* constant to actually enforce
+// the ceiling — see confirmPendingMeal, saveEditMeal, saveSettingsFromInputs,
+// commitWeightFromInput, and the custom-water submit handler.
+function clampNum(n, max){ return Math.max(0, Math.min(max, Number(n)||0)); }
 // Chart.js can't consume `var(--token)` strings directly (unlike inline SVG
 // style attributes, which resolve CSS custom properties natively) — colors
 // must be resolved to a concrete value at chart-build time instead.
@@ -818,7 +827,7 @@ function commitWeightFromInput(){
   const el = document.getElementById('weightInput');
   const n = parseFloat(el.value);
   const date = state.selectedDate;
-  saveDayField(date, { weight: isNaN(n) ? null : round(n) }).then((ok) => {
+  saveDayField(date, { weight: isNaN(n) ? null : clampNum(round(n), MAX_WEIGHT_LBS) }).then((ok) => {
     if (!ok) return; // save failed — saveDayField already surfaced state.loadError
     state.weightJustSaved = true;
     render();
@@ -948,9 +957,9 @@ async function confirmPendingMeal(){
   const token = loadToken;
   const { data, error } = await supabaseClient.from('meals').insert({
     user_id: userId, log_date: state.selectedDate,
-    name: m.name, calories: Math.max(0, Math.round(m.calories)), protein: Math.max(0, Math.round(m.protein)),
-    carbs: Math.max(0, Math.round(m.carbs)), fat: Math.max(0, Math.round(m.fat)),
-    sodium: Math.max(0, Math.round(m.sodium||0)), sugar: Math.max(0, Math.round(m.sugar||0)),
+    name: m.name, calories: clampNum(Math.round(m.calories), MAX_CALORIES_ENTRY), protein: clampNum(Math.round(m.protein), MAX_PROTEIN_ENTRY),
+    carbs: clampNum(Math.round(m.carbs), MAX_CARBS_ENTRY), fat: clampNum(Math.round(m.fat), MAX_FAT_ENTRY),
+    sodium: clampNum(Math.round(m.sodium||0), MAX_SODIUM), sugar: clampNum(Math.round(m.sugar||0), MAX_SUGAR_ENTRY),
   }).select().single();
   if (error) { state.loadError = 'Could not save meal: ' + error.message; render(); return; }
   // Discard if the user switched days while this was saving — state.meals now
@@ -1152,22 +1161,22 @@ function handleThemeChange(pref){
 
 function saveSettingsFromInputs(){
   const val = (id) => document.getElementById(id).value;
-  const num = (id, fallback) => { const n = parseFloat(val(id)); return isNaN(n) ? fallback : Math.max(0, n); };
+  const num = (id, fallback, max) => { const n = parseFloat(val(id)); return isNaN(n) ? fallback : clampNum(n, max); };
   const nextGoals = {
-    calories: num('settingsCalories', state.goals.calories),
-    protein: num('settingsProtein', state.goals.protein),
-    water: num('settingsWater', state.goals.water),
-    sodium: num('settingsSodium', state.goals.sodium),
-    sugar: num('settingsSugar', state.goals.sugar),
+    calories: num('settingsCalories', state.goals.calories, MAX_CALORIES_GOAL),
+    protein: num('settingsProtein', state.goals.protein, MAX_PROTEIN_GOAL),
+    water: num('settingsWater', state.goals.water, MAX_WATER_GOAL),
+    sodium: num('settingsSodium', state.goals.sodium, MAX_SODIUM),
+    sugar: num('settingsSugar', state.goals.sugar, MAX_SUGAR_GOAL),
   };
   const nextPreset = {
     name: (val('settingsPresetName') || '').trim() || DEFAULT_PROTEIN_PRESET.name,
-    calories: num('settingsPresetCalories', state.proteinPreset.calories),
-    protein: num('settingsPresetProtein', state.proteinPreset.protein),
-    carbs: num('settingsPresetCarbs', state.proteinPreset.carbs),
-    fat: num('settingsPresetFat', state.proteinPreset.fat),
-    sodium: num('settingsPresetSodium', state.proteinPreset.sodium),
-    sugar: num('settingsPresetSugar', state.proteinPreset.sugar),
+    calories: num('settingsPresetCalories', state.proteinPreset.calories, MAX_CALORIES_ENTRY),
+    protein: num('settingsPresetProtein', state.proteinPreset.protein, MAX_PROTEIN_ENTRY),
+    carbs: num('settingsPresetCarbs', state.proteinPreset.carbs, MAX_CARBS_ENTRY),
+    fat: num('settingsPresetFat', state.proteinPreset.fat, MAX_FAT_ENTRY),
+    sodium: num('settingsPresetSodium', state.proteinPreset.sodium, MAX_SODIUM),
+    sugar: num('settingsPresetSugar', state.proteinPreset.sugar, MAX_SUGAR_ENTRY),
   };
   state.settingsSaving = true; state.settingsError = null; render();
   // Dual write: user_settings (current goals + sodium/sugar, unchanged) then
@@ -1213,12 +1222,12 @@ async function saveEditMeal(id){
   if (!name) { showToast("Name can't be empty"); return; }
   const patch = {
     name,
-    calories: Math.max(0, Math.round(parseFloat(val(`.edit-calories[data-id="${id}"]`).value) || 0)),
-    protein: Math.max(0, Math.round(parseFloat(val(`.edit-protein[data-id="${id}"]`).value) || 0)),
-    carbs: Math.max(0, Math.round(parseFloat(val(`.edit-carbs[data-id="${id}"]`).value) || 0)),
-    fat: Math.max(0, Math.round(parseFloat(val(`.edit-fat[data-id="${id}"]`).value) || 0)),
-    sodium: Math.max(0, Math.round(parseFloat(val(`.edit-sodium[data-id="${id}"]`).value) || 0)),
-    sugar: Math.max(0, Math.round(parseFloat(val(`.edit-sugar[data-id="${id}"]`).value) || 0)),
+    calories: clampNum(Math.round(parseFloat(val(`.edit-calories[data-id="${id}"]`).value) || 0), MAX_CALORIES_ENTRY),
+    protein: clampNum(Math.round(parseFloat(val(`.edit-protein[data-id="${id}"]`).value) || 0), MAX_PROTEIN_ENTRY),
+    carbs: clampNum(Math.round(parseFloat(val(`.edit-carbs[data-id="${id}"]`).value) || 0), MAX_CARBS_ENTRY),
+    fat: clampNum(Math.round(parseFloat(val(`.edit-fat[data-id="${id}"]`).value) || 0), MAX_FAT_ENTRY),
+    sodium: clampNum(Math.round(parseFloat(val(`.edit-sodium[data-id="${id}"]`).value) || 0), MAX_SODIUM),
+    sugar: clampNum(Math.round(parseFloat(val(`.edit-sugar[data-id="${id}"]`).value) || 0), MAX_SUGAR_ENTRY),
   };
   const token = loadToken;
   const { data, error } = await supabaseClient.from('meals').update(patch).eq('id', id).select().single();
@@ -2150,7 +2159,7 @@ function renderDashboard(){
   const submitCustomWater = () => {
     const input = document.getElementById('customWaterInput');
     const v = parseFloat(input.value);
-    if (!isNaN(v) && v > 0) { addWater(v); input.value = ''; }
+    if (!isNaN(v) && v > 0) { addWater(clampNum(v, MAX_WATER_ENTRY)); input.value = ''; }
   };
   document.getElementById('customWaterBtn').addEventListener('click', submitCustomWater);
   document.getElementById('customWaterInput').addEventListener('keydown', (e) => {
