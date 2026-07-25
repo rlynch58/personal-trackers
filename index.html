@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.31';
+const APP_VERSION = '1.32';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -513,17 +513,25 @@ async function loadStreakData(){
   return proteinByDate;
 }
 
-// Counts backward from `anchorKey` (inclusive) through unbroken days where
-// logged protein met that day's goal, stopping at the first miss or the
-// first day with nothing logged at all (undefined in proteinByDate --
+// Counts backward from the day before `anchorKey` through unbroken days
+// where logged protein met that day's goal, stopping at the first miss or
+// the first day with nothing logged at all (undefined in proteinByDate --
 // treated the same as a miss, since a gap can't be assumed to be a hit).
 // Anchored on today rather than state.selectedDate: "current streak" is a
 // today-relative concept, same reasoning renderDashboard's pace block uses
 // goalsFor(todayKey()) instead of the selected-day goals.
+//
+// anchorKey (today) is deliberately excluded from that backward walk and
+// handled separately: today is still in progress, so it's "pending" rather
+// than a break. If today has already hit goal, it's folded into the count
+// (+1). If today hasn't hit goal yet -- or has nothing logged yet, same
+// thing -- the streak still reads as the unbroken run through yesterday,
+// not 0; today just hasn't joined it yet.
 function computeCurrentStreak(proteinByDate, goalProtein, anchorKey){
   if (!goalProtein || goalProtein <= 0) return 0;
   let streak = 0;
   let cursor = parseDateKey(anchorKey);
+  cursor.setDate(cursor.getDate() - 1); // start the walk at yesterday
   while (true) {
     const key = dateKey(cursor);
     const protein = proteinByDate[key];
@@ -531,6 +539,8 @@ function computeCurrentStreak(proteinByDate, goalProtein, anchorKey){
     streak++;
     cursor.setDate(cursor.getDate() - 1);
   }
+  const todaysProtein = proteinByDate[anchorKey];
+  if (todaysProtein != null && todaysProtein >= goalProtein) streak++;
   return streak;
 }
 
