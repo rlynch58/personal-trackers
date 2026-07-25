@@ -250,12 +250,11 @@ const state = {
   themePreference: getStoredThemePreference() || 'system', // 'light' | 'dark' | 'system'
 };
 
-// Seam for per-day goal history: every consumer of "the goals in effect for
-// date X" goes through this instead of reading state.goals directly, so that
-// dated goals (goals that change over time and apply as-of a given day) can
-// be introduced later by changing only this function's body. dateKey is
-// currently ignored entirely -- state.goals is still the one global, timeless
-// set of goals, so behavior is byte-for-byte identical to before this existed.
+// Seam introduced deliberately ahead of per-day goal history. dateKey is
+// currently ignored and this just returns the one global set of goals --
+// that's intentional, not a bug, since dated goals don't exist yet. When
+// they do, this is the single function to change; every consumer already
+// asks "goals as of this date" instead of reading state.goals directly.
 function goalsFor(dateKey){
   return state.goals;
 }
