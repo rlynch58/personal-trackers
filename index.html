@@ -182,7 +182,7 @@ const WEIGHT_RANGE_OPTIONS = [
   { key: '90', label: '90D', days: 90, phrase: 'the last 90 days' },
   { key: 'all', label: 'All', days: null, phrase: 'your history' },
 ];
-const APP_VERSION = '1.35';
+const APP_VERSION = '1.36';
 const MEAL_DELETE_UNDO_MS = 5000;
 const THEME_STORAGE_KEY = 'health-tracker-theme';
 const FN_NAME = 'estimate-nutrition';
@@ -1955,7 +1955,7 @@ function renderDashboard(){
                   <div class="muted" style="font-size:11px;">weight</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
-                  <div class="mono" style="font-size:16px; font-weight:600; color:${d.calories > dayGoals.calories ? 'var(--coral)' : (d.calories > 0 ? 'var(--sage)' : 'var(--ink)')}">${round(d.calories)}</div>
+                  <div class="mono" style="font-size:16px; font-weight:600; color:${(dayGoals.calories > 0 && d.calories >= dayGoals.calories * (1 - CALORIE_STREAK_TOLERANCE) && d.calories <= dayGoals.calories * (1 + CALORIE_STREAK_TOLERANCE)) ? 'var(--sage)' : 'var(--coral)'}">${round(d.calories)}</div>
                   <div class="muted" style="font-size:11px;">cal</div>
                 </div>
                 <div style="text-align:center; min-width:44px;">
