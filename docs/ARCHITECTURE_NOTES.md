@@ -188,7 +188,7 @@ than silently claiming success) and self-healing (saving again re-attempts
 both writes). It's deliberately *not* wrapped in a database transaction —
 the divergence window is one day, fully recoverable, and the app is headed
 for a native rewrite that makes hardening this specific web-code path not
-worth the complexity. See §10.
+worth the complexity. See §12.
 
 ## 6. History card calorie coloring (v1.36)
 
@@ -240,42 +240,88 @@ different, more precise reason. The null-exclusion exists so a day where
 someone only logged their weight isn't misread as "confirmed zero water
 that day."
 
-## 9. Known gaps and tech debt
+## 9. Numeric input ceilings (v1.40–v1.41)
+
+Every numeric field a user can type into (calories, protein, carbs, fat,
+sodium, sugar, water, weight — across Settings' daily goals, the quick-add
+preset editor, the pending-meal form, the meal-edit form, custom water
+amounts, and the weight input) is bounded by a `MAX_*` constant and a
+`clampNum(n, max)` helper: `Math.max(0, Math.min(max, Number(n)||0))`.
+
+This shipped in two passes. v1.40 added the `MAX_*` constants and put them
+on the inputs as HTML `max` attributes — but that alone did nothing to stop
+a bad value reaching the database, since these are plain buttons with no
+`<form>` submit in play; a `max` attribute only affects the spinner/keyboard-
+arrow behavior and native form validation, neither of which fires here. QA
+reproduced this by typing protein=24000/carbs=2000/fat=20000 directly and
+having it save. v1.41 fixed the actual gap by calling `clampNum()` at every
+save path that reads one of these fields: `confirmPendingMeal()` (shared by
+both manual entry and the AI-estimate review form), `saveEditMeal()`,
+`saveSettingsFromInputs()` (goals and preset), `commitWeightFromInput()`
+(clamped to `MAX_WEIGHT_LBS`, 1000), and the custom-water submit handler
+(clamped to `MAX_WATER_ENTRY`, 200 per add).
+
+Goal ceilings and entry ceilings are separate constants for the same metric
+(e.g. `MAX_CALORIES_GOAL = 10000` vs `MAX_CALORIES_ENTRY = 5000`) since a
+daily goal and a single meal's value are different orders of magnitude.
+Sodium is the one exception — `MAX_SODIUM` is shared across both goal and
+entry contexts, since a single very salty meal and a full day's sodium
+budget are already the same order of magnitude. These are generous ceilings
+meant only to catch an accidental extra digit, not tight clinical limits.
+
+## 10. Recent Meals: window, cap, and dedupe
+
+The "Recent meals" quick-add list is fed by `loadRecentMeals()`, which
+queries `meals` for the current user, `log_date` within the last **8
+days** (not 7 — a same-day-of-week weekly special should still show up a
+week later instead of dropping out right at a 7-day boundary), ordered
+most-recent-first, with a **150-row safety cap** on the query itself so an
+unusually heavy 8-day stretch can't blow up the payload.
+
+That raw result is then deduplicated down to at most **15** entries by
+`dedupeRecentMeals()`. Meal names are normalized (`normalizeMealNameTokens`:
+lowercased, punctuation stripped, connector words like "and"/"with"/"w"
+removed) into token sets, and two meals are merged into the same cluster if
+their token sets score above `MEAL_NAME_SIMILARITY_THRESHOLD = 0.4` on
+Jaccard similarity (intersection over union) — single-link clustering, so a
+name only has to clear the threshold against one existing cluster member,
+not all of them. This threshold was tuned against real data: near-duplicate
+names that prompted the feature scored ~0.44–1.0 once normalized, while
+genuinely distinct short names (e.g. "Chicken salad" vs. "Chicken
+sandwich") scored ~0.33 — 0.4 sits between the two with margin on both
+sides, erring toward under-merging (a missed merge just costs a slot; a
+wrong merge would hide a real meal).
+
+Within a cluster, meals are grouped by their exact trimmed name (the
+literal "variants"), and the most-frequently-typed variant wins, tied by
+which variant's latest entry is more recent — never a blended/averaged
+row, since quick-add has to insert one real logged meal. The winning row
+per cluster is what appears in the list, capped to the first 15 after
+clustering.
+
+## 11. Known gaps and tech debt
 
 - **`user_settings` stores goals/preset/theme as a single JSONB blob**
   rather than typed columns. Why it matters: there's no schema-level
   validation or querying on individual settings fields — malformed or
   partial JSON silently falls back to defaults rather than failing loudly.
-- **Robustness punch-list** (not urgent, but real):
-  - `cssVar()` reads a CSS custom property via `getComputedStyle(...).getPropertyValue(...)`,
-    which does **not** resolve a variable whose own value is another
-    `var(...)` reference — it would return the literal string `"var(--x)"`
-    instead of a color. Currently latent (every variable actually passed
-    through `cssVar()` today resolves to a plain value), but a future theme
-    edit that redefines one of those variables in terms of another would
-    silently break chart colors.
-  - `signOut()` only calls the auth sign-out call — it doesn't clear any
-    locally held app state (history, streaks, goals, etc.). A different
-    user signing in on the same device/session could momentarily see the
-    previous user's stale data before a fresh load overwrites it.
-  - The weight-fetch error banner shares a single `state.loadError` slot
-    with many unrelated failure paths (meal save/delete/move, day load,
-    streak refresh). Only one message can display at a time, and only a
-    successful main day-load clears it — so a weight-trend load error can
-    persist on screen well after it's no longer relevant, or a more urgent
-    error from an unrelated action can silently overwrite it.
-  - Numeric inputs (calories, protein, water goals, meal macros, etc.) all
-    set `min="0"` but have no upper bound — nothing stops an accidental
-    extra zero from being entered and saved.
-  - The calorie ring computes its fill percentage as `totals.calories /
-    goals.calories`, with no guard for a zero calorie goal — a zero goal
-    produces a divide-by-zero and a `NaN` percentage rather than a
-    handled empty/error state.
-  - The weight trend's up/down coloring hardcodes "down is good" (green)
-    and "up is bad" (red) with no setting to flip that assumption for
-    someone whose goal is to gain weight or muscle.
+- **The weight trend's up/down coloring** hardcodes "down is good" (green)
+  and "up is bad" (red) with no setting to flip that assumption for
+  someone whose goal is to gain weight or muscle.
 
-## 10. Strategic direction
+The following items from this list as of v1.38 have since been fixed and
+are recorded here only so the fix is traceable: `cssVar()` not resolving
+nested `var(...)` references (fixed v1.40 — it now recurses through the
+chain); `signOut()` not clearing local state (fixed v1.40 via
+`resetLocalState()`, which also bumps every in-flight-request token so a
+stale response from the old session can't land after sign-out); the
+weight-fetch error banner sharing `state.loadError` with unrelated failure
+paths (fixed v1.40 — it now has its own `state.weightFetchError` slot); the
+calorie ring's divide-by-zero on an unset goal (fixed v1.40 — a
+`calGoalSet` guard now renders an empty ring and "No goal set" instead);
+and numeric inputs having no real upper bound (fixed v1.40–v1.41, see §9).
+
+## 12. Strategic direction
 
 This app is committed to a native SwiftUI rewrite. The current web/PWA
 version is being kept **data-model-correct** — bugs and inconsistencies in
